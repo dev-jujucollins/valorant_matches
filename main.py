@@ -43,7 +43,7 @@ def main():
 
         # Extracting the match date
             match_date = soup.find("div", class_="moment-tz-convert").text.strip()
-
+            print("\n")
             print(f"{team1} vs {team2}")
             print(f"Score | {formatted_score}")
             print(f"Match Date: {match_date}")
