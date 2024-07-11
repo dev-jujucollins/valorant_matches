@@ -21,12 +21,16 @@ def fetch_and_parse(url): # Fetches the page content and parses it
 def extract_match_links(soup): # Extracts the match links from the page
     return [link for link in soup.find_all("a", href=True) if "35" in link["href"]]
 
-def extract_team_names_and_scores(match_url): # Extracts the team names and scores from the match pages
+def extract_teams_and_scores(match_url): # Extracts the team names and scores from the match pages
     soup = fetch_and_parse(match_url)
     teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][:2]
     score = soup.find("div", class_="js-spoiler").text.strip()
     formatted_score = re.sub(r"\s*:\s*", ":", score)
     return teams, formatted_score
+
+def extract_date(soup): # Extracts the date of the matches from the match pages
+    return soup.find("div", class_="moment-tz-convert").text.strip()
+    return match_date
 
 def main():
     soup = fetch_and_parse(EVENT_URL)
@@ -34,10 +38,11 @@ def main():
     print("\n")
     print("Champions Tour Americas 2024 - Recent Matches:\n")
 
-    for link in match_links:
+    for link in match_links: # Iterating through the match links and extracting the details
         match_url = BASE_URL + link["href"]
-        teams, formatted_score = extract_team_names_and_scores(match_url)
-        print(f"{teams[0]} vs {teams[1]} | Score: {formatted_score}")
+        teams, formatted_score = extract_teams_and_scores(match_url)
+        date = extract_date(fetch_and_parse(match_url))
+        print(f"{date} | {teams[0]} vs {teams[1]} | Score: {formatted_score}")
 
 if __name__ == "__main__":
     main()
