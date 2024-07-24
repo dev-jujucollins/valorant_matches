@@ -1,5 +1,5 @@
 # valorant_matches
- This script scrapes vlr.gg for the most recent Valorant match results for Champions Tour Americas, and outputs the team names, scores, match date, and link to the match stats.
+ This script scrapes vlr.gg for the most recent Valorant match results for the Champions Tour, and outputs the team names, scores, match date, and link to the match stats.
  I will likely utilize this to create a Discord bot that will post the most recent matches in a channel in the future at some point.
 
 Preview:
