@@ -40,10 +40,9 @@ def get_event_url(choice): # Returns the URL for the user selected event
     if choice in event_urls: # Checking if the user input is valid
         return event_urls[choice]
     elif choice == "5":
-        print("Exiting...")
+        print("\033[31mExiting...\033[0m")
         exit()
     else:
-        print("Invalid choice. Please try again.")
         return None
 
 def fetch_and_parse(url): # Fetches the page content and parses it
@@ -76,17 +75,18 @@ def main():
 
         EVENT_URL = get_event_url(choice)
         if not EVENT_URL:
-            print("Invalid choice. Try again.")
+            print("\033[31mInvalid choice. Try again.\033[0m")
+            print("\n")
             continue
 
         soup = fetch_and_parse(EVENT_URL)
         if soup is None:
-            print("Error fetching event data. Try again later.")
+            print("\033[31mError fetching event data. Try again later.\033[0m")
             continue
 
         match_links = extract_match_links(soup)
         if not match_links:
-            print("No matches found for the selected event.")
+            print("\033[31mNo matches found for the selected event.\033[0m")
             continue
 
         print("\nMatch Results:\n" + "-" * 100)
@@ -94,7 +94,7 @@ def main():
             match_url = BASE_URL + link["href"]
             match_soup = fetch_and_parse(match_url)
             if match_soup is None:
-                print("Failed to fetch match data.")
+                print("\033[31mFailed to fetch match data.\033[0m")
                 continue
 
             teams, formatted_score = extract_teams_and_scores(match_url)
