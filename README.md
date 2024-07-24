@@ -4,5 +4,6 @@
 
 Preview:
 
-
-<img width="762" alt="Screenshot 2024-07-10 at 11 08 44 PM" src="https://github.com/dev-jujucollins/valorant_matches/assets/83800421/5bd4e8cd-99da-47bb-9e42-aede4cfa9ee2">
+<img width="1098" alt="Screenshot 2024-07-24 at 1 07 43 AM" src="https://github.com/user-attachments/assets/920e7583-aba5-4cdb-854b-3c579df0c703">
+<img width="1098" alt="Screenshot 2024-07-24 at 1 08 33 AM" src="https://github.com/user-attachments/assets/b8b6fc88-87d9-437e-86b2-ad5903bd04a8">
+<img width="1098" alt="Screenshot 2024-07-24 at 1 10 00 AM" src="https://github.com/user-attachments/assets/6f65e9cb-9f46-442b-970c-055d4dcb0142">
