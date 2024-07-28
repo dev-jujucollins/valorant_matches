@@ -20,6 +20,7 @@ def menu():
         "Champions Tour EMEA",
         "Champions Tour APAC",
         "Champions Tour China",
+        "VCT Champions 2024",
         "Exit"
     ]
     print("Regions:")
@@ -36,10 +37,11 @@ def get_event_url(choice): # Returns the URL for the user selected event
         "2": f"{BASE_URL}/event/matches/2094/champions-tour-2024-emea-stage-2/?series_id=4030",
         "3": f"{BASE_URL}/event/matches/2005/champions-tour-2024-pacific-stage-2/?series_id=3839",
         "4": f"{BASE_URL}/event/matches/2096/champions-tour-2024-china-stage-2/?series_id=4034",
+        "5": f"{BASE_URL}/event/matches/2097/valorant-champions-2024/?series_id=4035",
     }
     if choice in event_urls: # Checking if the user input is valid
         return event_urls[choice]
-    elif choice == "5":
+    elif choice == "6":
         print("\033[31mExiting...\033[0m")
         exit()
     else:
@@ -58,7 +60,10 @@ def extract_match_links(soup): # Extracts the match links from the page
 def extract_teams_and_scores(match_url): # Extracts the team names and scores from the match pages
     soup = fetch_and_parse(match_url)
     teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][:2]
-    score = soup.find("div", class_="js-spoiler").text.strip()
+    try:
+        score = soup.find("div", class_="js-spoiler").text.strip()
+    except AttributeError:
+        score = "Match has not started yet."
     formatted_score = re.sub(r"\s*:\s*", ":", score) # Cleaning up the score format
     return teams, formatted_score
 
@@ -70,7 +75,7 @@ def extract_date(soup): # Extracts the date of the matches from the match pages
 def main():
     while True:
         choice = menu()
-        if choice == 5:
+        if choice == 6:
             break
 
         EVENT_URL = get_event_url(choice)
@@ -98,6 +103,8 @@ def main():
                 continue
 
             teams, formatted_score = extract_teams_and_scores(match_url)
+            if "TBD" in teams:
+                break
             date = extract_date(fetch_and_parse(match_url))
             match_link = BASE_URL + link["href"]
             print(f"\033[31m{date} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m")
