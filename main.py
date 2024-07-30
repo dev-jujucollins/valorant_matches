@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import re
 import requests
+import textwrap
 from bs4 import BeautifulSoup
 
 """Description: This script scrapes the VLR.gg website for the most recent matches in Champions Tour Americas and
@@ -9,9 +10,8 @@ outputs the team names, scores, match date, and link to the match stats."""
 # Constants
 BASE_URL = "https://vlr.gg"
 
-print("\n")
-print("VALORANT CHAMPIONS TOUR 2024")
-print("\n")
+print("\nVALORANT CHAMPIONS TOUR 2024\n")
+
 
 # Functions
 def menu():
@@ -31,7 +31,7 @@ def menu():
     return choice
 
 
-def get_event_url(choice): # Returns the URL for the user selected event
+def get_event_url(choice):  # Returns the URL for the user selected event
     event_urls = {
         "1": f"{BASE_URL}/event/matches/2095/champions-tour-2024-americas-stage-2/?series_id=4032",
         "2": f"{BASE_URL}/event/matches/2094/champions-tour-2024-emea-stage-2/?series_id=4030",
@@ -39,7 +39,7 @@ def get_event_url(choice): # Returns the URL for the user selected event
         "4": f"{BASE_URL}/event/matches/2096/champions-tour-2024-china-stage-2/?series_id=4034",
         "5": f"{BASE_URL}/event/matches/2097/valorant-champions-2024/?series_id=4035",
     }
-    if choice in event_urls: # Checking if the user input is valid
+    if choice in event_urls:  # Checking if the user input is valid
         return event_urls[choice]
     elif choice == "6":
         print("\033[31mExiting...\033[0m")
@@ -47,30 +47,33 @@ def get_event_url(choice): # Returns the URL for the user selected event
     else:
         return None
 
-def fetch_and_parse(url): # Fetches the page content and parses it
+
+def fetch_and_parse(url):  # Fetches the page content and parses it
     response = requests.get(url)
     if response.status_code == 200:
         return BeautifulSoup(response.content, "html.parser")
     else:
         response.raise_for_status()
 
-def extract_match_links(soup): # Extracts the match links from the page
+
+def extract_match_links(soup):  # Extracts the match links from the page
     return [link for link in soup.find_all("a", href=True) if "37" in link["href"] or "36" in link["href"]]
 
-def extract_teams_and_scores(match_url): # Extracts the team names and scores from the match pages
+
+def extract_teams_and_scores(match_url):  # Extracts the team names and scores from the match pages
     soup = fetch_and_parse(match_url)
     teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][:2]
     try:
         score = soup.find("div", class_="js-spoiler").text.strip()
     except AttributeError:
         score = "Match has not started yet."
-    formatted_score = re.sub(r"\s*:\s*", ":", score) # Cleaning up the score format
+    formatted_score = re.sub(r"\s*:\s*", ":", score)  # Cleaning up the score format
     return teams, formatted_score
 
 
-def extract_date(soup): # Extracts the date of the matches from the match pages
+def extract_date(soup):  # Extracts the date of the matches from the match pages
     return soup.find("div", class_="moment-tz-convert").text.strip()
-    return match_date
+
 
 def main():
     while True:
@@ -78,13 +81,13 @@ def main():
         if choice == 6:
             break
 
-        EVENT_URL = get_event_url(choice)
-        if not EVENT_URL:
+        event_url = get_event_url(choice)
+        if not event_url:
             print("\033[31mInvalid choice. Try again.\033[0m")
             print("\n")
             continue
 
-        soup = fetch_and_parse(EVENT_URL)
+        soup = fetch_and_parse(event_url)
         if soup is None:
             print("\033[31mError fetching event data. Try again later.\033[0m")
             continue
@@ -107,10 +110,13 @@ def main():
                 break
             date = extract_date(fetch_and_parse(match_url))
             match_link = BASE_URL + link["href"]
-            print(f"\033[31m{date} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m")
-            print(f"Stats: {match_link}") 
-            print("-" * 100)
+            output = textwrap.dedent(f"""
+                \033[31m{date} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
+                Stats: {match_link}
+                {'-' * 100}
+            """)
+            print(output)
+
 
 if __name__ == "__main__":
     main()
-    
