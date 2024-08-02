@@ -4,8 +4,6 @@ import requests
 import textwrap
 from bs4 import BeautifulSoup
 
-"""Description: This script scrapes the VLR.gg website for the most recent matches in Champions Tour Americas and
-outputs the team names, scores, match date, and link to the match stats."""
 
 # Constants
 BASE_URL = "https://vlr.gg"
@@ -72,7 +70,9 @@ def extract_teams_and_scores(match_url):  # Extracts the team names and scores f
 
 
 def extract_date(soup):  # Extracts the date of the matches from the match pages
-    return soup.find("div", class_="moment-tz-convert").text.strip()
+    match_date = soup.find("div", class_="moment-tz-convert").text.strip()
+    match_time = soup.find("div", class_="moment-tz-convert").find_next("div").text.strip()
+    return match_date, match_time
 
 
 def main():
@@ -108,10 +108,10 @@ def main():
             teams, formatted_score = extract_teams_and_scores(match_url)
             if "TBD" in teams:
                 break
-            date = extract_date(fetch_and_parse(match_url))
+            match_date, match_time = extract_date(fetch_and_parse(match_url))
             match_link = BASE_URL + link["href"]
             output = textwrap.dedent(f"""
-                \033[31m{date} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
+                \033[31m{match_date}  {match_time} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
                 Stats: {match_link}
                 {'-' * 100}
             """)
