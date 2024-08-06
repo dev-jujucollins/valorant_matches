@@ -3,6 +3,7 @@ import re
 import requests
 import textwrap
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Constants
@@ -19,7 +20,7 @@ def menu():
         "Champions Tour APAC",
         "Champions Tour China",
         "VCT Champions 2024",
-        "Exit"
+        "Exit",
     ]
     print("Regions:")
     for i, option in enumerate(options, start=1):
@@ -55,12 +56,20 @@ def fetch_and_parse(url):  # Fetches the page content and parses it
 
 
 def extract_match_links(soup):  # Extracts the match links from the page
-    return [link for link in soup.find_all("a", href=True) if "37" in link["href"] or "36" in link["href"]]
+    return [
+        link
+        for link in soup.find_all("a", href=True)
+        if "37" in link["href"] or "36" in link["href"]
+    ]
 
 
-def extract_teams_and_scores(match_url):  # Extracts the team names and scores from the match pages
+def extract_teams_and_scores(
+    match_url,
+):  # Extracts the team names and scores from the match pages
     soup = fetch_and_parse(match_url)
-    teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][:2]
+    teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][
+        :2
+    ]
     try:
         score = soup.find("div", class_="js-spoiler").text.strip()
     except AttributeError:
@@ -71,8 +80,31 @@ def extract_teams_and_scores(match_url):  # Extracts the team names and scores f
 
 def extract_date(soup):  # Extracts the date of the matches from the match pages
     match_date = soup.find("div", class_="moment-tz-convert").text.strip()
-    match_time = soup.find("div", class_="moment-tz-convert").find_next("div").text.strip()
+    match_time = (
+        soup.find("div", class_="moment-tz-convert").find_next("div").text.strip()
+    )
     return match_date, match_time
+
+
+def process_match(link):
+    match_url = BASE_URL + link["href"]
+    match_soup = fetch_and_parse(match_url)
+    if match_soup is None:
+        return "\033[31mFailed to fetch match data.\033[0m"
+
+    teams, formatted_score = extract_teams_and_scores(match_url)
+    if "TBD" in teams:
+        return None
+    match_date, match_time = extract_date(fetch_and_parse(match_url))
+    match_link = BASE_URL + link["href"]
+    output = textwrap.dedent(
+        f"""
+        \033[31m{match_date}  {match_time} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
+        Stats: {match_link}
+        {'-' * 100}
+    """
+    )
+    return output
 
 
 def main():
@@ -98,24 +130,21 @@ def main():
             continue
 
         print("\nMatch Results:\n" + "-" * 100)
-        for link in match_links:
-            match_url = BASE_URL + link["href"]
-            match_soup = fetch_and_parse(match_url)
-            if match_soup is None:
-                print("\033[31mFailed to fetch match data.\033[0m")
-                continue
 
-            teams, formatted_score = extract_teams_and_scores(match_url)
-            if "TBD" in teams:
-                break
-            match_date, match_time = extract_date(fetch_and_parse(match_url))
-            match_link = BASE_URL + link["href"]
-            output = textwrap.dedent(f"""
-                \033[31m{match_date}  {match_time} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
-                Stats: {match_link}
-                {'-' * 100}
-            """)
-            print(output)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_link = {
+                executor.submit(process_match, link): link for link in match_links
+            }
+            results = []
+            for future in as_completed(future_to_link):
+                result = future.result()
+                if result is not None:
+                    results.append((future_to_link[future], result))
+
+        sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
+
+        for _, result in sorted_results:
+            print(result)
 
 
 if __name__ == "__main__":
