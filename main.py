@@ -86,7 +86,7 @@ def extract_date(soup):  # Extracts the date of the matches from the match pages
     return match_date, match_time
 
 
-def process_match(link):
+def process_match(link):  # Processes the matches and returns the output
     match_url = BASE_URL + link["href"]
     match_soup = fetch_and_parse(match_url)
     if match_soup is None:
@@ -109,22 +109,22 @@ def process_match(link):
 
 def main():
     while True:
-        choice = menu()
-        if choice == 6:
+        selected_option = menu()
+        if selected_option == 6:
             break
 
-        event_url = get_event_url(choice)
+        event_url = get_event_url(selected_option)
         if not event_url:
             print("\033[31mInvalid choice. Try again.\033[0m")
             print("\n")
             continue
 
-        soup = fetch_and_parse(event_url)
-        if soup is None:
+        event_soup = fetch_and_parse(event_url)
+        if event_soup is None:
             print("\033[31mError fetching event data. Try again later.\033[0m")
             continue
 
-        match_links = extract_match_links(soup)
+        match_links = extract_match_links(event_soup)
         if not match_links:
             print("\033[31mNo matches found for the selected event.\033[0m")
             continue
@@ -132,14 +132,14 @@ def main():
         print("\nMatch Results:\n" + "-" * 100)
 
         with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_link = {
+            futures_to_link = {
                 executor.submit(process_match, link): link for link in match_links
             }
             results = []
-            for future in as_completed(future_to_link):
+            for future in as_completed(futures_to_link):
                 result = future.result()
                 if result is not None:
-                    results.append((future_to_link[future], result))
+                    results.append((futures_to_link[future], result))
 
         sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
 
