@@ -15,11 +15,11 @@ print("\nVALORANT CHAMPIONS TOUR 2024\n")
 # Functions
 def menu():
     options = [
-        "Champions Tour Americas",
-        "Champions Tour EMEA",
-        "Champions Tour APAC",
-        "Champions Tour China",
-        "VCT Champions 2024",
+        "Champions Tour Americas Playoffs",
+        "Champions Tour EMEA Playoffs",
+        "Champions Tour APAC Playoffs",
+        "Champions Tour China Playoffs",
+        "Valorant Champions 2024 Playoffs",
         "Exit",
     ]
     print("Regions:")
@@ -36,7 +36,7 @@ def get_event_url(choice):  # Returns the URL for the user selected event
         "2": f"{BASE_URL}/event/matches/2094/champions-tour-2024-emea-stage-2/?series_id=4030",
         "3": f"{BASE_URL}/event/matches/2005/champions-tour-2024-pacific-stage-2/?series_id=3839",
         "4": f"{BASE_URL}/event/matches/2096/champions-tour-2024-china-stage-2/?series_id=4034",
-        "5": f"{BASE_URL}/event/matches/2097/valorant-champions-2024/?series_id=4035",
+        "5": f"{BASE_URL}/event/matches/2097/valorant-champions-2024/?series_id=4131",
     }
     if choice in event_urls:  # Checking if the user input is valid
         return event_urls[choice]
