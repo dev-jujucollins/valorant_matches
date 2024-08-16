@@ -10,3 +10,5 @@ soupsieve==2.5
     # via beautifulsoup4
 urllib3==2.2.2
     # via requests
+
+rich~=13.7.1
