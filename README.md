@@ -1,4 +1,4 @@
-# valorant_matches
+# Valorant Matches
  This script scrapes vlr.gg for the most recent Valorant match results for the Champions Tour, and outputs the team names, scores, match date, and link to the match stats.
  I will likely utilize this to create a Discord bot that will post the most recent matches in a channel in the future at some point. 
  Is it faster to go on the website to view the information this provides? Most likely! But this is a fun learning experience.
