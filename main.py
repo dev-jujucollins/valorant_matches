@@ -2,6 +2,9 @@
 import re
 import requests
 import textwrap
+import time
+from rich.progress import Progress
+from formatter import Formatter
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,7 +16,7 @@ print("\nVALORANT CHAMPIONS TOUR 2024\n")
 
 
 # Functions
-def menu():
+def menu():  # Displays the menu and returns the user choice
     options = [
         "Champions Tour Americas Playoffs",
         "Champions Tour EMEA Playoffs",
@@ -26,7 +29,7 @@ def menu():
     for i, option in enumerate(options, start=1):
         print(f"{i}. {option}")
     print("\n")
-    choice = input("Which matches would you like to see results for: ")
+    choice = input("\nWhich matches would you like to see results for: ")
     return choice
 
 
@@ -41,7 +44,7 @@ def get_event_url(choice):  # Returns the URL for the user selected event
     if choice in event_urls:  # Checking if the user input is valid
         return event_urls[choice]
     elif choice == "6":
-        print("\033[31mExiting...\033[0m")
+        print(Formatter().format("\nExiting...\n", "red"))
         exit()
     else:
         return None
@@ -74,8 +77,10 @@ def extract_teams_and_scores(
         score = soup.find("div", class_="js-spoiler").text.strip()
     except AttributeError:
         score = "Match has not started yet."
+
+    is_live = soup.find("span", class_="match-header-vs-note mod-live")  # Checking if the match is in progress
     formatted_score = re.sub(r"\s*:\s*", ":", score)  # Cleaning up the score format
-    return teams, formatted_score
+    return teams, formatted_score, is_live
 
 
 def extract_date(soup):  # Extracts the date of the matches from the match pages
@@ -90,20 +95,28 @@ def process_match(link):  # Processes the matches and returns the output
     match_url = BASE_URL + link["href"]
     match_soup = fetch_and_parse(match_url)
     if match_soup is None:
-        return "\033[31mFailed to fetch match data.\033[0m"
+        return Formatter().format("Failed to fetch match data", "red")
 
-    teams, formatted_score = extract_teams_and_scores(match_url)
+    teams, formatted_score, is_live = extract_teams_and_scores(match_url)
     if "TBD" in teams:
         return None
     match_date, match_time = extract_date(fetch_and_parse(match_url))
     match_link = BASE_URL + link["href"]
-    output = textwrap.dedent(
-        f"""
-        \033[31m{match_date}  {match_time} | {teams[0]} vs {teams[1]} | Score: {formatted_score}\033[0m
-        Stats: {match_link}
-        {'-' * 100}
-    """
-    )
+    if is_live is not None:
+        output = textwrap.dedent(
+            f"""
+            {Formatter().format(f"{match_date}  {match_time}", "white")} | {Formatter().format(f"{teams[0]} vs {teams[1]}", "white")} | Score: {Formatter().format(f"{formatted_score}", "green")} | {Formatter().format("In Progress", "red")}
+            {Formatter().format(f"Stats: {match_link}", "cyan")}
+            {'-' * 100}
+        """)
+    else:
+        output = textwrap.dedent(
+            f"""
+            {Formatter().format(f"{match_date}  {match_time}", "white")} | {Formatter().format(f"{teams[0]} vs {teams[1]}", "white")} | Score: {Formatter().format(f"{formatted_score}", "green")}
+            {Formatter().format(f"Stats: {match_link}", "cyan")}
+            {'-' * 100}
+        """
+        )
     return output
 
 
@@ -115,36 +128,39 @@ def main():
 
         event_url = get_event_url(selected_option)
         if not event_url:
-            print("\033[31mInvalid choice. Try again.\033[0m")
-            print("\n")
+            print(Formatter().format("\nInvalid choice. Try again.\n", "red"))
             continue
 
         event_soup = fetch_and_parse(event_url)
         if event_soup is None:
-            print("\033[31mError fetching event data. Try again later.\033[0m")
+            print(Formatter().format("\Error fetching event data. Try again later.\n", "red"))
             continue
 
         match_links = extract_match_links(event_soup)
         if not match_links:
-            print("\033[31mNo matches found for the selected event.\033[0m")
+            print(Formatter().format("\nNo matches found for the selected event\n", "red"))
             continue
 
-        print("\nMatch Results:\n" + "-" * 100)
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:  # Using multiple threads to process the matches
             futures_to_link = {
                 executor.submit(process_match, link): link for link in match_links
             }
             results = []
-            for future in as_completed(futures_to_link):
-                result = future.result()
-                if result is not None:
-                    results.append((futures_to_link[future], result))
 
-        sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
+            with Progress() as progress:  # Displaying a progress bar
+                task = progress.add_task("[magenta]Getting match results", total=len(futures_to_link))
 
-        for _, result in sorted_results:
-            print(result)
+                for future in as_completed(futures_to_link):
+                    result = future.result()
+                    if result is not None:
+                        results.append((futures_to_link[future], result))
+                    progress.update(task, advance=1)
+                    time.sleep(0.5)
+
+            sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))  # Sorting the results
+
+            for _, result in sorted_results:
+                print(result)
 
 
 if __name__ == "__main__":
