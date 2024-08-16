@@ -1,9 +1,10 @@
 # valorant_matches
  This script scrapes vlr.gg for the most recent Valorant match results for the Champions Tour, and outputs the team names, scores, match date, and link to the match stats.
- I will likely utilize this to create a Discord bot that will post the most recent matches in a channel in the future at some point.
-
+ I will likely utilize this to create a Discord bot that will post the most recent matches in a channel in the future at some point. 
+ Is it faster to go on the website to view the information this provides? Most likely! But this is a fun learning experience.
+ 
 Preview:
 
-<img width="1098" alt="Screenshot 2024-07-24 at 1 07 43 AM" src="https://github.com/user-attachments/assets/920e7583-aba5-4cdb-854b-3c579df0c703">
-<img width="1098" alt="Screenshot 2024-07-24 at 1 08 33 AM" src="https://github.com/user-attachments/assets/b8b6fc88-87d9-437e-86b2-ad5903bd04a8">
-<img width="1098" alt="Screenshot 2024-07-24 at 1 10 00 AM" src="https://github.com/user-attachments/assets/6f65e9cb-9f46-442b-970c-055d4dcb0142">
+<img width="962" alt="Screenshot 2024-08-16 at 2 46 41 AM" src="https://github.com/user-attachments/assets/3d86a8bb-697a-4e76-b227-17cd166a96ca">
+<img width="962" alt="Screenshot 2024-08-16 at 2 48 12 AM" src="https://github.com/user-attachments/assets/c651087a-0dcb-46ab-a050-db20d40eb836">
+<img width="962" alt="Screenshot 2024-08-16 at 2 54 25 AM" src="https://github.com/user-attachments/assets/54855d0c-6bca-4f1e-b6b4-668c4b232fd6">
