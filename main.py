@@ -30,7 +30,7 @@ def menu():  # Displays the menu and returns the user choice
         print(f"{i}. {option}")
     print("\n")
     choice = input("\nWhich matches would you like to see results for: ")
-    return choice
+    return choice.strip()
 
 
 def get_event_url(choice):  # Returns the URL for the user selected event
