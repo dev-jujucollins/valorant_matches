@@ -90,8 +90,7 @@ def extract_date(soup):  # Extracts the date of the matches from the match pages
     )
     return match_date, match_time
 
-
-def process_match(link):  # Processes the matches and returns the output
+def process_match(link): # Processes the match page 
     match_url = BASE_URL + link["href"]
     match_soup = fetch_and_parse(match_url)
     if match_soup is None:
@@ -100,23 +99,22 @@ def process_match(link):  # Processes the matches and returns the output
     teams, formatted_score, is_live = extract_teams_and_scores(match_url)
     if "TBD" in teams:
         return None
-    match_date, match_time = extract_date(fetch_and_parse(match_url))
+
+    match_date, match_time = extract_date(match_soup)
     match_link = BASE_URL + link["href"]
-    if is_live is not None:
-        output = textwrap.dedent(
-            f"""
-            {Formatter().format(f"{match_date}  {match_time}", "white")} | {Formatter().format(f"{teams[0]} vs {teams[1]}", "white")} | Score: {Formatter().format(f"{formatted_score}", "green")} | {Formatter().format("In Progress", "red")}
-            {Formatter().format(f"Stats: {match_link}", "cyan")}
-            {'-' * 100}
-        """)
-    else:
-        output = textwrap.dedent(
-            f"""
-            {Formatter().format(f"{match_date}  {match_time}", "white")} | {Formatter().format(f"{teams[0]} vs {teams[1]}", "white")} | Score: {Formatter().format(f"{formatted_score}", "green")}
-            {Formatter().format(f"Stats: {match_link}", "cyan")}
-            {'-' * 100}
+    output = format_output(match_date, match_time, teams, formatted_score, match_link, is_live)
+    
+    return output
+
+def format_output(match_date, match_time, teams, formatted_score, match_link, is_live): # Formats the output for each match
+    status = "In Progress" if is_live else ""
+    output = textwrap.dedent(
+        f"""
+        {Formatter().format(f"{match_date}  {match_time}", "white")} | {Formatter().format(f"{teams[0]} vs {teams[1]}", "white")} | Score: {Formatter().format(f"{formatted_score}", "green")} {Formatter().format(status, "red")}
+        {Formatter().format(f"Stats: {match_link}", "cyan")}
+        {'-' * 100}
         """
-        )
+    )
     return output
 
 
