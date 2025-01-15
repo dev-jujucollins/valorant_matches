@@ -12,17 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Constants
 BASE_URL = "https://vlr.gg"
 
-print("\nVALORANT CHAMPIONS TOUR 2024\n")
+print("\nValorant Champions Tour 25\n")
 
 
 # Functions
 def menu():  # Displays the menu and returns the user choice
     options = [
-        "Champions Tour Americas Playoffs",
-        "Champions Tour EMEA Playoffs",
-        "Champions Tour APAC Playoffs",
-        "Champions Tour China Playoffs",
-        "Valorant Champions 2024 Playoffs",
+        "VCT 25: Americas Kickoff",
+        "VCT 25: EMEA Kickoff",
+        "VCT 25: APAC Kickoff",
+        "VCT 25: China Kickoff",
         "Exit",
     ]
     print("Regions:")
@@ -35,15 +34,14 @@ def menu():  # Displays the menu and returns the user choice
 
 def get_event_url(choice):  # Returns the URL for the user selected event
     event_urls = {
-        "1": f"{BASE_URL}/event/matches/2095/champions-tour-2024-americas-stage-2/?series_id=4032",
-        "2": f"{BASE_URL}/event/matches/2094/champions-tour-2024-emea-stage-2/?series_id=4030",
-        "3": f"{BASE_URL}/event/matches/2005/champions-tour-2024-pacific-stage-2/?series_id=3839",
-        "4": f"{BASE_URL}/event/matches/2096/champions-tour-2024-china-stage-2/?series_id=4034",
-        "5": f"{BASE_URL}/event/matches/2097/valorant-champions-2024/?series_id=4131",
+        "1": f"{BASE_URL}//event/matches/2274/champions-tour-2025-americas-kickoff/?series_id=4405",
+        "2": f"{BASE_URL}/event/matches/2276/champions-tour-2025-emea-kickoff/?series_id=4407",
+        "3": f"{BASE_URL}/event/matches/2277/champions-tour-2025-pacific-kickoff/?series_id=4408",
+        "4": f"{BASE_URL}/event/matches/2275/champions-tour-2025-china-kickoff/?series_id=4406",
     }
     if choice in event_urls:  # Checking if the user input is valid
         return event_urls[choice]
-    elif choice == "6":
+    elif choice == "5":
         print(Formatter().format("\nExiting...\n", "red"))
         exit()
     else:
@@ -62,7 +60,7 @@ def extract_match_links(soup):  # Extracts the match links from the page
     return [
         link
         for link in soup.find_all("a", href=True)
-        if "37" in link["href"] or "36" in link["href"]
+        if any(code in link["href"] for code in ("427", "428", "429", "430", "431"))
     ]
 
 
@@ -80,6 +78,7 @@ def extract_teams_and_scores(
 
     is_live = soup.find("span", class_="match-header-vs-note mod-live")  # Checking if the match is in progress
     formatted_score = re.sub(r"\s*:\s*", ":", score)  # Cleaning up the score format
+    teams = [re.sub(r'\s*\(.*?\)\s*', '', team) for team in teams] # Removing parentheses from team names to make output more readable
     return teams, formatted_score, is_live
 
 
