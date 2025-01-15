@@ -63,10 +63,8 @@ def extract_match_links(soup):  # Extracts the match links from the page
         if any(code in link["href"] for code in ("427", "428", "429", "430", "431"))
     ]
 
-
-def extract_teams_and_scores(
-    match_url,
-):  # Extracts the team names and scores from the match pages
+# Extracts the team names and scores from the match pages
+def extract_teams_and_scores(match_url,):  
     soup = fetch_and_parse(match_url)
     teams = [team.text.strip() for team in soup.find_all("div", class_="wf-title-med")][
         :2
