@@ -1,7 +1,6 @@
 import re
 import requests
 import textwrap
-import time
 from rich.progress import Progress
 from formatter import Formatter
 from bs4 import BeautifulSoup
