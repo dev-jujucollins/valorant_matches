@@ -1,14 +1,15 @@
 beautifulsoup4==4.12.3
-certifi==2024.7.4
-    # via requests
+requests==2.31.0
+rich==13.7.0
+urllib3==2.2.0
+lxml==5.1.0
+typing-extensions==4.9.0
+certifi==2024.2.2
 charset-normalizer==3.3.2
-    # via requests
-idna==3.7
-    # via requests
-requests==2.32.3
+idna==3.6
 soupsieve==2.5
-    # via beautifulsoup4
-urllib3==2.2.2
-    # via requests
-
-rich~=13.7.1
+markdown-it-py==3.0.0
+pygments==2.17.2
+linkify-it-py==2.0.3
+mdurl==0.1.2
+colorlog==6.8.2
