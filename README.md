@@ -77,6 +77,9 @@ The application logs information to both the console and a file (`valorant_match
 
 Preview:
 
-<img width="962" alt="Screenshot 2024-08-16 at 2 46 41 AM" src="https://github.com/user-attachments/assets/3d86a8bb-697a-4e76-b227-17cd166a96ca">
-<img width="962" alt="Screenshot 2024-08-16 at 2 48 12 AM" src="https://github.com/user-attachments/assets/c651087a-0dcb-46ab-a050-db20d40eb836">
-<img width="962" alt="Screenshot 2024-08-16 at 2 54 25 AM" src="https://github.com/user-attachments/assets/54855d0c-6bca-4f1e-b6b4-668c4b232fd6">
+<img width="1216" alt="Screenshot 2025-06-05 at 2 35 05 PM" src="https://github.com/user-attachments/assets/3884547a-d2c8-4fea-90d0-b9eac90cc691" />
+<img width="1216" alt="Screenshot 2025-06-05 at 2 35 14 PM" src="https://github.com/user-attachments/assets/e4e38dd8-7c75-43c6-89be-b6354c210842" />
+<img width="1216" alt="Screenshot 2025-06-05 at 2 35 25 PM" src="https://github.com/user-attachments/assets/22a84d1b-efeb-45dc-9cdf-9d52744995e0" />
+<img width="1216" alt="Screenshot 2025-06-05 at 2 35 40 PM" src="https://github.com/user-attachments/assets/08a9d2f1-cf93-4d89-a4da-a0a2b2e539df" />
+
+
