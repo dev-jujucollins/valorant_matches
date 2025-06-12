@@ -8,10 +8,11 @@ class Formatter:  # Class for formatting text output with colors
             "blue": "\033[34m",
             "magenta": "\033[35m",
             "cyan": "\033[36m",
-            "reset": "\033[0m"
+            "reset": "\033[0m",
         }
 
     def format(self, text, color):
         return f"{self.colors[color]}{text}{self.colors['reset']}"
+
 
 formatter = Formatter()
