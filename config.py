@@ -1,4 +1,4 @@
-"""Configuration settings for the Valorant Matches application."""
+# Configuration settings for the Valorant Matches application.
 
 import logging
 import colorlog
@@ -58,7 +58,7 @@ MAX_WORKERS = 10
 
 @dataclass
 class Event:
-    """Represents a VCT event."""
+    # Represents a VCT event
 
     name: str
     url: str
@@ -87,10 +87,15 @@ EVENTS: Dict[str, Event] = {
         url=f"{BASE_URL}/event/matches/2275/champions-tour-2025-china-kickoff/",
         series_id="4406",
     ),
+    "5": Event(
+        name="VCT 25: Masters Toronto",
+        url=f"{BASE_URL}/event/matches/2282/valorant-masters-toronto-2025/",
+        series_id="4416",
+    ),
 }
 
 # Match status codes to filter
-MATCH_CODES = ("427", "428", "429", "430", "431")
+MATCH_CODES = ("427", "428", "429", "430", "431", "498", "499")
 
 # HTTP headers
 HEADERS = {
