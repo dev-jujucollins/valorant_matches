@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-"""Main entry point for the Valorant Matches application."""
 
 import logging
 import logging.config
@@ -16,7 +15,7 @@ logger = logging.getLogger("valorant_matches")
 
 
 def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tuple]:
-    """Process matches concurrently and return results."""
+    # Process matches concurrently and return results.
     results = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures_to_link = {
@@ -39,7 +38,7 @@ def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tup
 
 
 def main() -> None:
-    """Main application entry point."""
+
     logger.info("Starting Valorant Matches application")
     print("\nValorant Champions Tour 25\n")
 
@@ -48,7 +47,7 @@ def main() -> None:
     while True:
         try:
             selected_option = client.display_menu()
-            if selected_option == "5":
+            if selected_option == "6":
                 logger.info("User chose to exit")
                 break
 
