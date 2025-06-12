@@ -1,4 +1,4 @@
-"""Core functionality for fetching and processing Valorant match data."""
+# Core functionality for fetching and processing Valorant match data.
 
 import logging
 import time
@@ -30,7 +30,7 @@ logger = logging.getLogger("valorant_matches")
 
 @dataclass
 class Match:
-    """Represents a Valorant match."""
+    # Represents a Valorant match
 
     date: str
     time: str
@@ -42,7 +42,7 @@ class Match:
 
 
 class ValorantClient:
-    """Client for fetching and processing Valorant match data."""
+    # Client for fetching and processing Valorant match data
 
     def __init__(self):
         self.session = requests.Session()
@@ -52,7 +52,7 @@ class ValorantClient:
     def _make_request(
         self, url: str, retries: int = MAX_RETRIES
     ) -> Optional[BeautifulSoup]:
-        """Make an HTTP request with retry logic."""
+        # Make an HTTP request with retry logic
         for attempt in range(retries):
             try:
                 response = self.session.get(url, timeout=REQUEST_TIMEOUT)
@@ -71,17 +71,17 @@ class ValorantClient:
                     return None
 
     def get_event_url(self, choice: str) -> Optional[str]:
-        """Get the URL for the selected event."""
+        # Get the URL for the selected event
         if choice in EVENTS:
             return EVENTS[choice].url
-        elif choice == "5":
+        elif choice == "6":
             logger.info("User chose to exit")
             return None
         logger.warning(f"Invalid event choice: {choice}")
         return None
 
     def fetch_event_matches(self, event_url: str) -> List[Dict]:
-        """Fetch all matches for an event."""
+        # Fetch all matches for an event
         logger.info(f"Fetching matches for event: {event_url}")
         soup = self._make_request(event_url)
         if not soup:
@@ -92,11 +92,11 @@ class ValorantClient:
             for link in soup.find_all("a", href=True)
             if any(code in link["href"] for code in MATCH_CODES)
         ]
-        logger.info(f"Found {len(match_links)} matches")
+        logger.info(f"Found {len(match_links)} matches") 
         return match_links
 
     def process_match(self, link: Dict) -> Optional[str]:
-        """Process a single match and return formatted output."""
+        # Process a single match and return formatted output
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
@@ -128,7 +128,7 @@ class ValorantClient:
     def _extract_match_data(
         self, soup: BeautifulSoup
     ) -> Tuple[List[str], str, Optional[bool]]:
-        """Extract team names, score, and live status from match page."""
+        # Extract team names, score, and live status from match page
         teams = [
             team.text.strip() for team in soup.find_all("div", class_="wf-title-med")
         ][:2]
@@ -144,21 +144,21 @@ class ValorantClient:
         return teams, score, is_live
 
     def _extract_date_time(self, soup: BeautifulSoup) -> Tuple[str, str]:
-        """Extract match date and time."""
+        # Extract match date and time
         date_elem = soup.find("div", class_="moment-tz-convert")
         match_date = date_elem.text.strip()
         match_time = date_elem.find_next("div").text.strip()
         return match_date, match_time
 
     def _format_match_output(self, match: Match) -> str:
-        """Format match data for display."""
+        # Format match data for display 
         status = "In Progress" if match.is_live else ""
         return f"{self.formatter.format(f"{match.date}  {match.time}", "white")} | {self.formatter.format(f"{match.team1} vs {match.team2}", "white")} | Score: {self.formatter.format(f"{match.score}", "green")} {self.formatter.format(status, "red")}\n{self.formatter.format(f"Stats: {match.url}", "cyan")}\n{'-' * 100}\n"
 
     def display_menu(self) -> str:
-        """Display the event selection menu."""
+        # Display the event selection menu
         print("\nRegions:")
         for key, event in EVENTS.items():
             print(f"{key}. {event.name}")
-        print("5. Exit\n")
+        print("6. Exit\n")
         return input("\nWhich matches would you like to see results for: ").strip()
