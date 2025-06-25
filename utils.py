@@ -1,10 +1,8 @@
 import re
 import requests
 import textwrap
-from rich.progress import Progress
 from formatter import Formatter
 from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_URL = "https://vlr.gg"
 

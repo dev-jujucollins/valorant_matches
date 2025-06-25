@@ -4,7 +4,7 @@ import logging
 import logging.config
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Optional
+from typing import List
 from rich.progress import Progress
 from config import MAX_WORKERS, LOGGING_CONFIG
 from valorant_client import ValorantClient
