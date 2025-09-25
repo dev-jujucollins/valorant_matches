@@ -1,6 +1,7 @@
 # Core functionality for fetching and processing Valorant match data.
 
 import logging
+import logging.config
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
@@ -24,7 +25,7 @@ from config import (
 from formatter import Formatter
 
 # Configure logging
-logging.config.dictConfig(LOGGING_CONFIG)
+logging.config.dictConfig(LOGGING_CONFIG)  
 logger = logging.getLogger("valorant_matches")
 
 
@@ -57,7 +58,7 @@ class ValorantClient:
             try:
                 response = self.session.get(url, timeout=REQUEST_TIMEOUT)
                 response.raise_for_status()
-                return BeautifulSoup(response.content, "html.parser")
+                return BeautifulSoup(response.text, "html.parser")
             except RequestException as e:
                 logger.warning(
                     f"Request failed (attempt {attempt + 1}/{retries}): {str(e)}"
@@ -82,7 +83,7 @@ class ValorantClient:
 
     def fetch_event_matches(self, event_url: str) -> List[Dict]:
         # Fetch all matches for an event
-        logger.info(f"Fetching matches for event: {event_url}")
+        logger.info(f"Fetching matches for event:\n{event_url}\n")
         soup = self._make_request(event_url)
         if not soup:
             return []
@@ -92,7 +93,7 @@ class ValorantClient:
             for link in soup.find_all("a", href=True)
             if any(code in link["href"] for code in MATCH_CODES)
         ]
-        logger.info(f"Found {len(match_links)} matches") 
+        logger.info(f"Found {len(match_links)} matches")
         return match_links
 
     def process_match(self, link: Dict) -> Optional[str]:
@@ -134,10 +135,11 @@ class ValorantClient:
         ][:2]
         teams = [team.split("(")[0].strip() for team in teams]
 
-        try:
-            score = soup.find("div", class_="js-spoiler").text.strip()
+        score_elem = soup.find("div", class_="js-spoiler")
+        if score_elem:
+            score = score_elem.text.strip()
             score = " ".join(score.split())
-        except AttributeError:
+        else:
             score = "Match has not started yet."
 
         is_live = bool(soup.find("span", class_="match-header-vs-note mod-live"))
@@ -146,19 +148,41 @@ class ValorantClient:
     def _extract_date_time(self, soup: BeautifulSoup) -> Tuple[str, str]:
         # Extract match date and time
         date_elem = soup.find("div", class_="moment-tz-convert")
-        match_date = date_elem.text.strip()
-        match_time = date_elem.find_next("div").text.strip()
+        if date_elem:
+            match_date = date_elem.text.strip()
+            time_elem = date_elem.find_next("div")
+            match_time = time_elem.text.strip() if time_elem else "Unknown time"
+        else:
+            match_date, match_time = "Unknown date", "Unknown time"
         return match_date, match_time
 
     def _format_match_output(self, match: Match) -> str:
-        # Format match data for display 
-        status = "In Progress" if match.is_live else ""
-        return f"{self.formatter.format(f"{match.date}  {match.time}", "white")} | {self.formatter.format(f"{match.team1} vs {match.team2}", "white")} | Score: {self.formatter.format(f"{match.score}", "green")} {self.formatter.format(status, "red")}\n{self.formatter.format(f"Stats: {match.url}", "cyan")}\n{'-' * 100}\n"
+        # Format match data for display
+        status = "🔴 LIVE" if match.is_live else ""
+
+        # Formatted match output
+        separator = "─" * 100
+        date_time = self.formatter.date_time(f"{match.date}  {match.time}")
+        teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
+        score = self.formatter.score(match.score)
+        stats_link = self.formatter.stats_link(f"Stats: {match.url}")
+
+        if status:
+            status = self.formatter.live_status(status)
+            return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
+        else:
+            return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.formatter.muted(separator)}\n"
 
     def display_menu(self) -> str:
         # Display the event selection menu
-        print("\nRegions:")
+        print(f"\n{self.formatter.info('🌍 Available Regions:', bold=True)}")
         for key, event in EVENTS.items():
-            print(f"{key}. {event.name}")
-        print("6. Exit\n")
-        return input("\nWhich matches would you like to see results for: ").strip()
+            print(
+                f"{self.formatter.primary(f'{key}.', bold=True)} {self.formatter.highlight(event.name)}"
+            )
+        print(
+            f"{self.formatter.primary('6.', bold=True)} {self.formatter.muted('Exit')}\n"
+        )
+        return input(
+            f"{self.formatter.info('Which matches would you like to see results for:', bold=True)} "
+        ).strip()
