@@ -161,3 +161,4 @@ test_main.py
 settings.json
 .gitignore
 archived/
+.github/copilot-instructions.md
