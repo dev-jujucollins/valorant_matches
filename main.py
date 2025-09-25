@@ -24,7 +24,8 @@ def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tup
 
         with Progress() as progress:
             task = progress.add_task(
-                "[magenta]Getting match results", total=len(futures_to_link)
+                "[bright_magenta]🔍 Fetching match results...",
+                total=len(futures_to_link),
             )
 
             for future in as_completed(futures_to_link):
@@ -34,13 +35,22 @@ def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tup
                 progress.update(task, advance=1)
                 time.sleep(0.5)  # Rate limiting
 
+        print("")
     return sorted(results, key=lambda x: match_links.index(x[0]))
 
 
 def main() -> None:
 
     logger.info("Starting Valorant Matches application")
-    print("\nValorant Champions Tour 25\n")
+    # Create a formatter instance for main application
+    from formatter import Formatter
+
+    formatter = Formatter()
+
+    print(
+        f"\n{formatter.format('Valorant Champions Tour 2025', 'bright_cyan', bold=True)}"
+    )
+    print(f"{formatter.format('=' * 40, 'bright_magenta')}\n")
 
     client = ValorantClient()
 
@@ -49,21 +59,22 @@ def main() -> None:
             selected_option = client.display_menu()
             if selected_option == "6":
                 logger.info("User chose to exit")
+                print(
+                    f"\n{formatter.success('👋 Thank you for using the Valorant Match Tracker!')}"
+                )
                 break
 
             event_url = client.get_event_url(selected_option)
             if not event_url:
                 logger.warning("Invalid event selection")
-                print(client.formatter.format("\nInvalid choice. Try again.\n", "red"))
+                print(f"\n{formatter.error('❌ Invalid choice. Please try again.')}\n")
                 continue
 
             match_links = client.fetch_event_matches(event_url)
             if not match_links:
                 logger.warning("No matches found for selected event")
                 print(
-                    client.formatter.format(
-                        "\nNo matches found for the selected event\n", "red"
-                    )
+                    f"\n{formatter.warning('⚠️  No matches found for the selected event')}\n"
                 )
                 continue
 
@@ -73,14 +84,14 @@ def main() -> None:
 
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")
-            print("\nExiting...")
+            print(
+                f"\n{formatter.warning('⚠️  Application interrupted by user. Exiting...')}"
+            )
             break
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             print(
-                client.formatter.format(
-                    "\nAn unexpected error occurred. Please try again.\n", "red"
-                )
+                f"\n{formatter.error('💥 An unexpected error occurred. Please try again.')}\n"
             )
 
     logger.info("Application shutdown complete")
