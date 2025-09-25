@@ -88,7 +88,7 @@ EVENTS: Dict[str, Event] = {
         series_id="4406",
     ),
     "5": Event(
-        name="VCT 25: Champions",
+        name="VCT 25: Champions - Playoffs",
         url=f"{BASE_URL}/event/matches/2283/valorant-champions-2025/?series_id=5080/",
         series_id="4416",
     ),

@@ -164,7 +164,11 @@ class ValorantClient:
         separator = "─" * 100
         date_time = self.formatter.date_time(f"{match.date}  {match.time}")
         teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
-        score = self.formatter.score(match.score)
+        # If the match hasn't started yet, show the message in red
+        if match.score.lower().startswith("match has not started yet"):
+            score = self.formatter.error(match.score)
+        else:
+            score = self.formatter.score(match.score)
         stats_link = self.formatter.stats_link(f"Stats: {match.url}")
 
         if status:
