@@ -88,14 +88,14 @@ EVENTS: Dict[str, Event] = {
         series_id="4406",
     ),
     "5": Event(
-        name="VCT 25: Masters Toronto",
-        url=f"{BASE_URL}/event/matches/2282/valorant-masters-toronto-2025/",
+        name="VCT 25: Champions",
+        url=f"{BASE_URL}/event/matches/2283/valorant-champions-2025/?series_id=5080/",
         series_id="4416",
     ),
 }
 
 # Match status codes to filter
-MATCH_CODES = ("427", "428", "429", "430", "431", "498", "499")
+MATCH_CODES = ("427", "428", "429", "430", "431", "498", "499", "542")
 
 # HTTP headers
 HEADERS = {
