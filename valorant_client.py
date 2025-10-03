@@ -10,7 +10,6 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from requests.exceptions import RequestException
-from rich.progress import Progress
 
 from config import (
     BASE_URL,
@@ -25,7 +24,7 @@ from config import (
 from formatter import Formatter
 
 # Configure logging
-logging.config.dictConfig(LOGGING_CONFIG)  
+logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
 
@@ -179,7 +178,7 @@ class ValorantClient:
 
     def display_menu(self) -> str:
         # Display the event selection menu
-        print(f"\n{self.formatter.info('🌍 Available Regions:', bold=True)}")
+        print(f"\n{self.formatter.info(' Available Regions:', bold=True)}")
         for key, event in EVENTS.items():
             print(
                 f"{self.formatter.primary(f'{key}.', bold=True)} {self.formatter.highlight(event.name)}"
