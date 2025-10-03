@@ -1,9 +1,7 @@
 # Configuration settings for the Valorant Matches application.
-
-import logging
 import colorlog
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict
 
 # Logging configuration
 LOGGING_CONFIG = {
