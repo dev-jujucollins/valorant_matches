@@ -24,7 +24,7 @@ def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tup
 
         with Progress() as progress:
             task = progress.add_task(
-                "[bright_magenta]🔍 Fetching match results...",
+                "[bright_magenta] Fetching match results...",
                 total=len(futures_to_link),
             )
 
@@ -40,7 +40,6 @@ def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tup
 
 
 def main() -> None:
-
     logger.info("Starting Valorant Matches application")
     # Create a formatter instance for main application
     from formatter import Formatter
@@ -60,21 +59,21 @@ def main() -> None:
             if selected_option == "6":
                 logger.info("User chose to exit")
                 print(
-                    f"\n{formatter.success('👋 Thank you for using the Valorant Match Tracker!')}"
+                    f"\n{formatter.success('Thank you for using the Valorant Match Tracker!')}"
                 )
                 break
 
             event_url = client.get_event_url(selected_option)
             if not event_url:
                 logger.warning("Invalid event selection")
-                print(f"\n{formatter.error('❌ Invalid choice. Please try again.')}\n")
+                print(f"\n{formatter.error('Invalid choice. Please try again.')}\n")
                 continue
 
             match_links = client.fetch_event_matches(event_url)
             if not match_links:
                 logger.warning("No matches found for selected event")
                 print(
-                    f"\n{formatter.warning('⚠️  No matches found for the selected event')}\n"
+                    f"\n{formatter.warning('No matches found for the selected event')}\n"
                 )
                 continue
 
@@ -85,13 +84,13 @@ def main() -> None:
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")
             print(
-                f"\n{formatter.warning('⚠️  Application interrupted by user. Exiting...')}"
+                f"\n{formatter.warning('Application interrupted by user. Exiting...')}"
             )
             break
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             print(
-                f"\n{formatter.error('💥 An unexpected error occurred. Please try again.')}\n"
+                f"\n{formatter.error('An unexpected error occurred. Please try again.')}\n"
             )
 
     logger.info("Application shutdown complete")
