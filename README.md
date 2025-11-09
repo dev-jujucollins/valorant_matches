@@ -77,9 +77,8 @@ The application logs information to both the console and a file (`valorant_match
 
 Preview:
 
-<img width="1216" alt="Screenshot 2025-06-05 at 2 35 05 PM" src="https://github.com/user-attachments/assets/3884547a-d2c8-4fea-90d0-b9eac90cc691" />
-<img width="1216" alt="Screenshot 2025-06-05 at 2 35 14 PM" src="https://github.com/user-attachments/assets/e4e38dd8-7c75-43c6-89be-b6354c210842" />
-<img width="1216" alt="Screenshot 2025-06-05 at 2 35 25 PM" src="https://github.com/user-attachments/assets/22a84d1b-efeb-45dc-9cdf-9d52744995e0" />
-<img width="1216" alt="Screenshot 2025-06-05 at 2 35 40 PM" src="https://github.com/user-attachments/assets/08a9d2f1-cf93-4d89-a4da-a0a2b2e539df" />
-
+<img width="929" height="625" alt="Screenshot 2025-11-09 at 10 20 51 AM" src="https://github.com/user-attachments/assets/cb21b275-c0de-4117-8591-e3298d4a91cd" />
+<img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 02 AM" src="https://github.com/user-attachments/assets/ddbf326b-9348-48dd-a856-619cf2787a78" />
+<img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 43 AM" src="https://github.com/user-attachments/assets/9dd2385c-9ab8-43b4-ad53-a23fc038b239" />
+<img width="929" height="693" alt="Screenshot 2025-11-09 at 10 24 50 AM" src="https://github.com/user-attachments/assets/951e69dd-f5c7-4345-be0b-adb92b180b42" />
 
