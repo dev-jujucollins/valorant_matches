@@ -1,0 +1,45 @@
+[project]
+name = "valorant-matches"
+version = "0.1.0"
+description = "A Python application that fetches and displays match results from the Valorant Champions Tour (VCT) events"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4==4.12.3",
+    "requests==2.31.0",
+    "rich==13.7.0",
+    "urllib3==2.2.0",
+    "lxml==5.1.0",
+    "typing-extensions==4.9.0",
+    "certifi==2024.2.2",
+    "charset-normalizer==3.3.2",
+    "idna==3.6",
+    "soupsieve==2.5",
+    "markdown-it-py==3.0.0",
+    "pygments==2.17.2",
+    "linkify-it-py==2.0.3",
+    "mdurl==0.1.2",
+    "colorlog==6.8.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "main.py",
+    "config.py",
+    "formatter.py",
+    "valorant_client.py",
+]
+
+[dependency-groups]
+dev = []
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+

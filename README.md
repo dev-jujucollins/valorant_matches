@@ -15,6 +15,39 @@ A Python application that fetches and displays match results from the Valorant C
 
 ## Installation
 
+### Using UV (Recommended)
+
+1. Install UV if you haven't already:
+
+```bash
+# macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+2. Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/valorant_matches.git
+cd valorant_matches
+```
+
+3. Install dependencies and create a virtual environment:
+
+```bash
+uv sync
+```
+
+4. Activate the virtual environment:
+
+```bash
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
+### Using pip (Alternative)
+
 1. Clone the repository:
 
 ```bash
@@ -51,7 +84,8 @@ The application will display a menu of available VCT events. Select a number to 
 - `valorant_client.py` - Core functionality for fetching and processing match data
 - `config.py` - Configuration settings and constants
 - `formatter.py` - Terminal output formatting utilities
-- `requirements.txt` - Project dependencies
+- `pyproject.toml` - Project metadata and dependencies (UV/pip compatible)
+- `requirements.txt` - Project dependencies (legacy support)
 
 ## Logging
 
