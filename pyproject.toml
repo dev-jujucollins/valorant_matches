@@ -20,6 +20,7 @@ dependencies = [
     "linkify-it-py==2.0.3",
     "mdurl==0.1.2",
     "colorlog==6.8.2",
+    "python-dotenv==1.0.0",
 ]
 
 [build-system]
@@ -35,7 +36,16 @@ only-include = [
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
 
 [tool.pyright]
 venvPath = "."

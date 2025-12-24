@@ -1,7 +1,29 @@
 # Configuration settings for the Valorant Matches application.
+import os
+from pathlib import Path
+
 import colorlog
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import Dict
+
+# Load environment variables from .env file
+load_dotenv()
+
+
+def get_env_bool(key: str, default: bool = False) -> bool:
+    """Get a boolean value from environment variable."""
+    value = os.getenv(key, str(default)).lower()
+    return value in ("true", "1", "yes", "on")
+
+
+def get_env_int(key: str, default: int) -> int:
+    """Get an integer value from environment variable."""
+    try:
+        return int(os.getenv(key, str(default)))
+    except ValueError:
+        return default
+
 
 # Logging configuration
 LOGGING_CONFIG = {
@@ -28,7 +50,7 @@ LOGGING_CONFIG = {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "colored",
-            "level": "INFO",
+            "level": os.getenv("LOG_LEVEL", "INFO"),
         },
         "file": {
             "class": "logging.FileHandler",
@@ -46,12 +68,17 @@ LOGGING_CONFIG = {
     },
 }
 
-# Application settings
+# Application settings (configurable via environment variables)
 BASE_URL = "https://vlr.gg"
-REQUEST_TIMEOUT = 10
-MAX_RETRIES = 3
-RETRY_DELAY = 1
-MAX_WORKERS = 10
+REQUEST_TIMEOUT = get_env_int("REQUEST_TIMEOUT", 10)
+MAX_RETRIES = get_env_int("MAX_RETRIES", 3)
+RETRY_DELAY = get_env_int("RETRY_DELAY", 1)
+MAX_WORKERS = get_env_int("MAX_WORKERS", 10)
+
+# Cache settings
+CACHE_ENABLED = get_env_bool("CACHE_ENABLED", True)
+CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 300)
+CACHE_DIR = Path(os.getenv("CACHE_DIR", ".cache"))
 
 
 @dataclass

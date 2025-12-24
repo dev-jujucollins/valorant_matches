@@ -14,24 +14,43 @@ logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
 
-def process_matches(client: ValorantClient, match_links: List[dict]) -> List[tuple]:
+def process_matches(
+    client: ValorantClient,
+    match_links: List[dict],
+    view_mode: str = "all"
+) -> List[tuple]:
     # Process matches concurrently and return results.
+    # view_mode: "all", "results", or "upcoming"
     results = []
+    upcoming_only = view_mode == "upcoming"
+    results_only = view_mode == "results"
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures_to_link = {
-            executor.submit(client.process_match, link): link for link in match_links
+            executor.submit(client.process_match, link, upcoming_only): link
+            for link in match_links
         }
+
+        task_label = {
+            "all": "Fetching all matches...",
+            "results": "Fetching match results...",
+            "upcoming": "Fetching upcoming matches...",
+        }.get(view_mode, "Fetching matches...")
 
         with Progress() as progress:
             task = progress.add_task(
-                "[bright_magenta] Fetching match results...",
+                f"[bright_magenta] {task_label}",
                 total=len(futures_to_link),
             )
 
             for future in as_completed(futures_to_link):
                 result = future.result()
                 if result is not None:
-                    results.append((futures_to_link[future], result))
+                    # For results_only mode, skip upcoming matches
+                    if results_only and "UPCOMING" in result:
+                        pass
+                    else:
+                        results.append((futures_to_link[future], result))
                 progress.update(task, advance=1)
                 time.sleep(0.5)  # Rate limiting
 
@@ -77,9 +96,26 @@ def main() -> None:
                 )
                 continue
 
-            results = process_matches(client, match_links)
-            for _, result in results:
-                print(result)
+            # Show view mode menu
+            view_mode_option = client.display_view_mode_menu()
+            if view_mode_option == "4":
+                continue  # Back to events
+
+            view_mode_map = {"1": "all", "2": "results", "3": "upcoming"}
+            view_mode = view_mode_map.get(view_mode_option, "all")
+
+            results = process_matches(client, match_links, view_mode)
+
+            if not results:
+                if view_mode == "upcoming":
+                    print(f"\n{formatter.warning('No upcoming matches found for this event.')}\n")
+                elif view_mode == "results":
+                    print(f"\n{formatter.warning('No completed matches found for this event.')}\n")
+                else:
+                    print(f"\n{formatter.warning('No matches found.')}\n")
+            else:
+                for _, result in results:
+                    print(result)
 
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")

@@ -2,14 +2,16 @@
 
 A Python application that fetches and displays match results from the Valorant Champions Tour (VCT) events.
 
-(**Currently not updated with newer events**)
-
 ## Features
 
 - Real-time match results from VCT events
 - Support for multiple regions (Americas, EMEA, APAC, China)
+- **View modes**: All matches, Results only, or Upcoming only
+- **Caching**: Match data cached locally with configurable TTL
 - Concurrent match processing for faster results
-- Beautiful terminal output with rich formatting
+- Beautiful terminal output with Rich formatting
+- **Resilient web scraping** with fallback CSS selectors
+- **Configurable** via environment variables
 - Comprehensive error handling and logging
 - Rate limiting to respect the website's resources
 
@@ -78,14 +80,59 @@ python main.py
 
 The application will display a menu of available VCT events. Select a number to view match results for that event.
 
+## Configuration
+
+Copy `.env.example` to `.env` to customize settings:
+
+```bash
+cp .env.example .env
+```
+
+Available options:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REQUEST_TIMEOUT` | 10 | HTTP request timeout in seconds |
+| `MAX_RETRIES` | 3 | Number of retry attempts for failed requests |
+| `RETRY_DELAY` | 1 | Delay between retries in seconds |
+| `MAX_WORKERS` | 10 | Number of concurrent workers |
+| `CACHE_ENABLED` | true | Enable/disable match data caching |
+| `CACHE_TTL_SECONDS` | 300 | Cache time-to-live (5 minutes) |
+| `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
+
 ## Project Structure
 
-- `main.py` - Application entry point
-- `valorant_client.py` - Core functionality for fetching and processing match data
-- `config.py` - Configuration settings and constants
-- `formatter.py` - Terminal output formatting utilities
-- `pyproject.toml` - Project metadata and dependencies (UV/pip compatible)
-- `requirements.txt` - Project dependencies (legacy support)
+```
+valorant_matches/
+├── main.py              # Application entry point
+├── valorant_client.py   # Core match fetching and processing
+├── config.py            # Configuration and constants
+├── formatter.py         # Rich-based terminal formatting
+├── cache.py             # Match data caching with TTL
+├── tests/               # Test suite
+│   ├── test_cache.py
+│   ├── test_config.py
+│   ├── test_formatter.py
+│   └── test_valorant_client.py
+├── pyproject.toml       # Project metadata and dependencies
+├── requirements.txt     # Legacy pip dependencies
+└── .env.example         # Configuration template
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+# Using UV
+uv run pytest
+
+# With coverage
+uv run pytest --cov
+
+# Using pip
+pytest
+```
 
 ## Logging
 
