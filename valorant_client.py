@@ -3,8 +3,7 @@
 import logging
 import logging.config
 import time
-from dataclasses import dataclass, asdict
-from typing import List, Optional, Tuple, Dict
+from dataclasses import asdict, dataclass
 from urllib.parse import urljoin
 
 import requests
@@ -28,6 +27,9 @@ from formatter import Formatter
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
+# Maximum backoff delay in seconds
+MAX_BACKOFF_DELAY = 30
+
 
 @dataclass
 class Match:
@@ -46,16 +48,24 @@ class Match:
 class ValorantClient:
     # Client for fetching and processing Valorant match data
 
-    def __init__(self):
+    def __init__(self, cache_enabled: bool = True):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self.formatter = Formatter()
-        self.cache = MatchCache()
+        self.cache = MatchCache(enabled=cache_enabled)
+        self._cache_enabled = cache_enabled
+
+    def _calculate_backoff(self, attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter."""
+        delay = RETRY_DELAY * (2**attempt)
+        # Add some jitter (0-25% of delay)
+        jitter = delay * 0.25 * (time.time() % 1)
+        return min(delay + jitter, MAX_BACKOFF_DELAY)
 
     def _make_request(
         self, url: str, retries: int = MAX_RETRIES
-    ) -> Optional[BeautifulSoup]:
-        # Make an HTTP request with retry logic
+    ) -> BeautifulSoup | None:
+        # Make an HTTP request with exponential backoff retry logic
         for attempt in range(retries):
             try:
                 response = self.session.get(url, timeout=REQUEST_TIMEOUT)
@@ -66,14 +76,17 @@ class ValorantClient:
                     f"Request failed (attempt {attempt + 1}/{retries}): {str(e)}"
                 )
                 if attempt < retries - 1:
-                    time.sleep(RETRY_DELAY)
+                    backoff_delay = self._calculate_backoff(attempt)
+                    logger.debug(f"Retrying in {backoff_delay:.2f}s...")
+                    time.sleep(backoff_delay)
                 else:
                     logger.error(
                         f"Failed to fetch data from {url} after {retries} attempts"
                     )
                     return None
+        return None
 
-    def get_event_url(self, choice: str) -> Optional[str]:
+    def get_event_url(self, choice: str) -> str | None:
         # Get the URL for the selected event
         if choice in EVENTS:
             return EVENTS[choice].url
@@ -83,7 +96,7 @@ class ValorantClient:
         logger.warning(f"Invalid event choice: {choice}")
         return None
 
-    def fetch_event_matches(self, event_url: str) -> List[Dict]:
+    def fetch_event_matches(self, event_url: str) -> list[dict]:
         # Fetch all matches for an event
         logger.info(f"Fetching matches for event:\n{event_url}\n")
         soup = self._make_request(event_url)
@@ -98,20 +111,22 @@ class ValorantClient:
         logger.info(f"Found {len(match_links)} matches")
         return match_links
 
-    def process_match(self, link: Dict, upcoming_only: bool = False) -> Optional[str]:
+    def process_match(self, link: dict, upcoming_only: bool = False) -> str | None:
         # Process a single match and return formatted output
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
         try:
             # Check cache first (but not for upcoming matches filter)
-            if not upcoming_only:
+            if not upcoming_only and self._cache_enabled:
                 cached_data = self.cache.get(match_url)
                 if cached_data:
-                    match = Match(**cached_data)
+                    cached_match = Match(**cached_data)
                     # Don't use cache for live matches (need fresh data)
-                    if not match.is_live:
-                        return self._format_match_output(match)
+                    # Also don't use cache for matches that were previously upcoming
+                    # (they may have completed since caching)
+                    if not cached_match.is_live and not cached_match.is_upcoming:
+                        return self._format_match_output(cached_match)
 
             soup = self._make_request(match_url)
             if not soup:
@@ -141,9 +156,14 @@ class ValorantClient:
                 is_upcoming=is_upcoming,
             )
 
-            # Cache the match data (but not live or upcoming matches)
-            if not match.is_live and not match.is_upcoming:
+            # Cache only completed matches (not live or upcoming)
+            # This ensures transitioning matches get fresh data
+            if self._cache_enabled and not match.is_live and not match.is_upcoming:
                 self.cache.set(match_url, asdict(match))
+            elif self._cache_enabled:
+                # Invalidate cache for matches that are now live/upcoming
+                # (in case they were previously cached as completed incorrectly)
+                self.cache.invalidate(match_url)
 
             return self._format_match_output(match)
 
@@ -153,7 +173,7 @@ class ValorantClient:
 
     def _extract_match_data(
         self, soup: BeautifulSoup
-    ) -> Tuple[List[str], str, Optional[bool]]:
+    ) -> tuple[list[str], str, bool | None]:
         # Extract team names, score, and live status from match page
         # Uses fallback selectors for resilience against HTML changes
         teams = self._extract_teams(soup)
@@ -161,17 +181,17 @@ class ValorantClient:
         is_live = self._extract_live_status(soup)
         return teams, score, is_live
 
-    def _extract_teams(self, soup: BeautifulSoup) -> List[str]:
+    def _extract_teams(self, soup: BeautifulSoup) -> list[str]:
         """Extract team names with fallback selectors."""
         # Primary selector
         team_selectors = [
-            ("div", {"class_": "wf-title-med"}),
-            ("div", {"class_": "match-header-link-name"}),
-            ("a", {"class_": "match-header-link"}),
+            ("div", "wf-title-med"),
+            ("div", "match-header-link-name"),
+            ("a", "match-header-link"),
         ]
 
-        for tag, attrs in team_selectors:
-            elements = soup.find_all(tag, **attrs)
+        for tag, class_name in team_selectors:
+            elements = soup.find_all(tag, class_=class_name)
             if elements and len(elements) >= 2:
                 teams = [el.text.strip() for el in elements][:2]
                 teams = [team.split("(")[0].strip() for team in teams]
@@ -184,13 +204,13 @@ class ValorantClient:
     def _extract_score(self, soup: BeautifulSoup) -> str:
         """Extract match score with fallback selectors."""
         score_selectors = [
-            ("div", {"class_": "js-spoiler"}),
-            ("div", {"class_": "match-header-vs-score"}),
-            ("span", {"class_": "match-header-vs-score-winner"}),
+            ("div", "js-spoiler"),
+            ("div", "match-header-vs-score"),
+            ("span", "match-header-vs-score-winner"),
         ]
 
-        for tag, attrs in score_selectors:
-            score_elem = soup.find(tag, **attrs)
+        for tag, class_name in score_selectors:
+            score_elem = soup.find(tag, class_=class_name)
             if score_elem:
                 score = score_elem.text.strip()
                 score = " ".join(score.split())
@@ -202,32 +222,29 @@ class ValorantClient:
     def _extract_live_status(self, soup: BeautifulSoup) -> bool:
         """Extract live status with fallback selectors."""
         live_selectors = [
-            ("span", {"class_": "match-header-vs-note mod-live"}),
-            ("span", {"class_": "mod-live"}),
-            ("div", {"class_": "match-header-vs-note mod-live"}),
+            ("span", "match-header-vs-note mod-live"),
+            ("span", "mod-live"),
+            ("div", "match-header-vs-note mod-live"),
         ]
 
-        for tag, attrs in live_selectors:
-            if soup.find(tag, **attrs):
+        for tag, class_name in live_selectors:
+            if soup.find(tag, class_=class_name):
                 return True
 
         # Also check for "LIVE" text in the header area
         header = soup.find("div", class_="match-header-vs")
-        if header and "live" in header.text.lower():
-            return True
+        return bool(header and "live" in header.text.lower())
 
-        return False
-
-    def _extract_date_time(self, soup: BeautifulSoup) -> Tuple[str, str]:
+    def _extract_date_time(self, soup: BeautifulSoup) -> tuple[str, str]:
         """Extract match date and time with fallback selectors."""
         date_selectors = [
-            ("div", {"class_": "moment-tz-convert"}),
-            ("div", {"class_": "match-header-date"}),
-            ("span", {"class_": "moment-tz-convert"}),
+            ("div", "moment-tz-convert"),
+            ("div", "match-header-date"),
+            ("span", "moment-tz-convert"),
         ]
 
-        for tag, attrs in date_selectors:
-            date_elem = soup.find(tag, **attrs)
+        for tag, class_name in date_selectors:
+            date_elem = soup.find(tag, class_=class_name)
             if date_elem:
                 match_date = date_elem.text.strip()
                 time_elem = date_elem.find_next("div")
@@ -267,9 +284,7 @@ class ValorantClient:
         print(
             f"{self.formatter.primary('6.', bold=True)} {self.formatter.muted('Exit')}\n"
         )
-        return input(
-            f"{self.formatter.info('Select an event:', bold=True)} "
-        ).strip()
+        return input(f"{self.formatter.info('Select an event:', bold=True)} ").strip()
 
     def display_view_mode_menu(self) -> str:
         # Display the view mode selection menu
@@ -286,6 +301,4 @@ class ValorantClient:
         print(
             f"{self.formatter.primary('4.', bold=True)} {self.formatter.muted('Back to Events')}\n"
         )
-        return input(
-            f"{self.formatter.info('Select view mode:', bold=True)} "
-        ).strip()
+        return input(f"{self.formatter.info('Select view mode:', bold=True)} ").strip()

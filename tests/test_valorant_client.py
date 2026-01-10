@@ -1,10 +1,10 @@
 # Tests for the valorant_client module.
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_client import ValorantClient, Match
+from valorant_client import Match, ValorantClient
 
 
 @pytest.fixture
@@ -317,10 +317,53 @@ class TestMakeRequest:
 
         mock_get.side_effect = RequestException("Connection failed")
 
-        with patch("valorant_client.MatchCache"):
-            with patch("valorant_client.time.sleep"):  # Skip sleep during test
-                client = ValorantClient()
-                result = client._make_request("https://vlr.gg/test", retries=2)
+        with (
+            patch("valorant_client.MatchCache"),
+            patch("valorant_client.time.sleep"),  # Skip sleep during test
+        ):
+            client = ValorantClient()
+            result = client._make_request("https://vlr.gg/test", retries=2)
 
         assert result is None
         assert mock_get.call_count == 2
+
+
+class TestClientCacheControl:
+    def test_client_cache_enabled_by_default(self):
+        """Test that cache is enabled by default."""
+        with patch("valorant_client.MatchCache") as mock_cache:
+            ValorantClient()
+            mock_cache.assert_called_once_with(enabled=True)
+
+    def test_client_cache_disabled(self):
+        """Test that cache can be disabled via constructor."""
+        with patch("valorant_client.MatchCache") as mock_cache:
+            ValorantClient(cache_enabled=False)
+            mock_cache.assert_called_once_with(enabled=False)
+
+
+class TestExponentialBackoff:
+    def test_calculate_backoff_increases(self):
+        """Test that backoff delay increases with attempts."""
+        with patch("valorant_client.MatchCache"):
+            client = ValorantClient()
+
+            delay0 = client._calculate_backoff(0)
+            delay1 = client._calculate_backoff(1)
+            delay2 = client._calculate_backoff(2)
+
+            # Each delay should be roughly double the previous (with some jitter)
+            assert delay1 > delay0
+            assert delay2 > delay1
+
+    def test_calculate_backoff_max_limit(self):
+        """Test that backoff delay is capped at MAX_BACKOFF_DELAY."""
+        from valorant_client import MAX_BACKOFF_DELAY
+
+        with patch("valorant_client.MatchCache"):
+            client = ValorantClient()
+
+            # Very high attempt number should still be capped
+            delay = client._calculate_backoff(100)
+
+            assert delay <= MAX_BACKOFF_DELAY

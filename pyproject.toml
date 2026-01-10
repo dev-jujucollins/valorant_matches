@@ -39,6 +39,8 @@ only-include = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -52,4 +54,32 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
+exclude = ["archived"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = ["archived"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "W",      # pycodestyle warnings
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["valorant_client", "config", "formatter", "cache"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
 

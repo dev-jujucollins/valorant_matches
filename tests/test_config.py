@@ -2,8 +2,6 @@
 import os
 from unittest.mock import patch
 
-import pytest
-
 
 class TestEnvHelpers:
     def test_get_env_bool_true_values(self):

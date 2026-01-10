@@ -3,7 +3,6 @@ from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 
-
 # Custom theme for consistent styling across the application
 VALORANT_THEME = Theme({
     "error": "bold bright_red",

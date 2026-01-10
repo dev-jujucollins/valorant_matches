@@ -1,11 +1,10 @@
 # Configuration settings for the Valorant Matches application.
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import colorlog
-from dataclasses import dataclass
 from dotenv import load_dotenv
-from typing import Dict
 
 # Load environment variables from .env file
 load_dotenv()
@@ -91,7 +90,7 @@ class Event:
 
 
 # Event configurations
-EVENTS: Dict[str, Event] = {
+EVENTS: dict[str, Event] = {
     "1": Event(
         name="VCT 25: Americas Kickoff",
         url=f"{BASE_URL}/event/matches/2274/champions-tour-2025-americas-kickoff/",

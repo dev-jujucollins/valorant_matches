@@ -2,6 +2,8 @@
   "venvPath": ".",
   "venv": ".venv",
   "pythonVersion": "3.11",
-  "typeCheckingMode": "basic"
+  "typeCheckingMode": "basic",
+  "include": ["*.py", "tests"],
+  "exclude": [".venv"]
 }
 

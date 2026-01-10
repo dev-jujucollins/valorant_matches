@@ -1,8 +1,5 @@
 # Tests for the cache module.
-import json
 import time
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -139,3 +136,26 @@ class TestMatchCache:
 
         assert key1 == key2
         assert len(key1) == 32  # MD5 hex digest length
+
+    def test_cache_invalidate(self, cache):
+        """Test invalidating a cached entry."""
+        url = "https://vlr.gg/match/12345"
+        data = {"team1": "Sentinels", "team2": "Cloud9"}
+
+        cache.set(url, data)
+        assert cache.get(url) == data
+
+        result = cache.invalidate(url)
+
+        assert result is True
+        assert cache.get(url) is None
+
+    def test_cache_invalidate_nonexistent(self, cache):
+        """Test invalidating a non-existent entry returns False."""
+        result = cache.invalidate("https://vlr.gg/match/nonexistent")
+        assert result is False
+
+    def test_cache_invalidate_disabled(self, disabled_cache):
+        """Test that invalidate returns False when cache is disabled."""
+        result = disabled_cache.invalidate("https://vlr.gg/match/12345")
+        assert result is False

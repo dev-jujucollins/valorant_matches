@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from config import CACHE_DIR, CACHE_ENABLED, CACHE_TTL_SECONDS
 
@@ -39,7 +39,7 @@ class MatchCache:
         """Get the file path for a cache key."""
         return self.cache_dir / f"{key}.json"
 
-    def get(self, url: str) -> Optional[Any]:
+    def get(self, url: str) -> Any | None:
         """Get cached data for a URL if it exists and is not expired."""
         if not self.enabled:
             return None
@@ -51,7 +51,7 @@ class MatchCache:
             return None
 
         try:
-            with open(cache_path, "r", encoding="utf-8") as f:
+            with open(cache_path, encoding="utf-8") as f:
                 cached = json.load(f)
 
             # Check if cache has expired
@@ -89,6 +89,24 @@ class MatchCache:
         except OSError as e:
             logger.warning(f"Failed to write cache for {url}: {e}")
 
+    def invalidate(self, url: str) -> bool:
+        """Invalidate (remove) cached data for a URL. Returns True if entry was removed."""
+        if not self.enabled:
+            return False
+
+        key = self._get_cache_key(url)
+        cache_path = self._get_cache_path(key)
+
+        if cache_path.exists():
+            try:
+                cache_path.unlink()
+                logger.debug(f"Invalidated cache for {url}")
+                return True
+            except OSError as e:
+                logger.warning(f"Failed to invalidate cache for {url}: {e}")
+                return False
+        return False
+
     def clear(self) -> int:
         """Clear all cached data. Returns number of entries cleared."""
         if not self.cache_dir.exists():
@@ -115,7 +133,7 @@ class MatchCache:
 
         for cache_file in self.cache_dir.glob("*.json"):
             try:
-                with open(cache_file, "r", encoding="utf-8") as f:
+                with open(cache_file, encoding="utf-8") as f:
                     cached = json.load(f)
 
                 if current_time - cached["timestamp"] > self.ttl_seconds:
@@ -143,7 +161,7 @@ class MatchCache:
         for cache_file in self.cache_dir.glob("*.json"):
             total += 1
             try:
-                with open(cache_file, "r", encoding="utf-8") as f:
+                with open(cache_file, encoding="utf-8") as f:
                     cached = json.load(f)
 
                 if current_time - cached["timestamp"] > self.ttl_seconds:

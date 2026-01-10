@@ -1,7 +1,7 @@
 # Tests for the formatter module.
 import pytest
 
-from formatter import Formatter, VALORANT_THEME
+from formatter import VALORANT_THEME, Formatter
 
 
 @pytest.fixture
