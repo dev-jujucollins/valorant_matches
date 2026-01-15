@@ -135,7 +135,7 @@ class TestMatchCache:
         key2 = cache._get_cache_key(url)
 
         assert key1 == key2
-        assert len(key1) == 32  # MD5 hex digest length
+        assert len(key1) == 64  # SHA-256 hex digest length
 
     def test_cache_invalidate(self, cache):
         """Test invalidating a cached entry."""

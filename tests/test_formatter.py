@@ -112,9 +112,20 @@ class TestValorantTheme:
     def test_theme_has_required_styles(self):
         """Test that theme includes all required style definitions."""
         required_styles = [
-            "error", "warning", "success", "info",
-            "primary", "secondary", "muted", "highlight",
-            "accent", "team", "score", "live", "date_time", "link"
+            "error",
+            "warning",
+            "success",
+            "info",
+            "primary",
+            "secondary",
+            "muted",
+            "highlight",
+            "accent",
+            "team",
+            "score",
+            "live",
+            "date_time",
+            "link",
         ]
 
         for style in required_styles:

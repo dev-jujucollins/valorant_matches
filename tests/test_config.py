@@ -70,17 +70,20 @@ class TestConfigValues:
     def test_base_url(self):
         """Test BASE_URL is set correctly."""
         from config import BASE_URL
+
         assert BASE_URL == "https://vlr.gg"
 
     def test_events_defined(self):
         """Test EVENTS dictionary is populated."""
         from config import EVENTS
+
         assert len(EVENTS) > 0
         assert "1" in EVENTS
 
     def test_event_structure(self):
         """Test Event dataclass structure."""
         from config import EVENTS
+
         event = EVENTS["1"]
 
         assert hasattr(event, "name")
@@ -92,6 +95,7 @@ class TestConfigValues:
     def test_headers_defined(self):
         """Test HEADERS is defined with User-Agent."""
         from config import HEADERS
+
         assert "User-Agent" in HEADERS
 
     def test_logging_config_structure(self):

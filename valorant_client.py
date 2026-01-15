@@ -30,6 +30,10 @@ logger = logging.getLogger("valorant_matches")
 # Maximum backoff delay in seconds
 MAX_BACKOFF_DELAY = 30
 
+# Circuit breaker settings
+CIRCUIT_BREAKER_THRESHOLD = 5  # Number of consecutive failures to trip
+CIRCUIT_BREAKER_RESET_TIME = 60  # Seconds before attempting to reset
+
 
 @dataclass
 class Match:
@@ -45,6 +49,12 @@ class Match:
     is_upcoming: bool = False
 
 
+class CircuitBreakerOpen(Exception):
+    """Raised when the circuit breaker is open and requests are blocked."""
+
+    pass
+
+
 class ValorantClient:
     # Client for fetching and processing Valorant match data
 
@@ -54,6 +64,9 @@ class ValorantClient:
         self.formatter = Formatter()
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
+        # Circuit breaker state
+        self._failure_count = 0
+        self._circuit_open_time: float | None = None
 
     def _calculate_backoff(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter."""
@@ -62,14 +75,49 @@ class ValorantClient:
         jitter = delay * 0.25 * (time.time() % 1)
         return min(delay + jitter, MAX_BACKOFF_DELAY)
 
+    def _check_circuit_breaker(self) -> None:
+        """Check if circuit breaker allows requests. Raises CircuitBreakerOpen if not."""
+        if self._circuit_open_time is not None:
+            elapsed = time.time() - self._circuit_open_time
+            if elapsed < CIRCUIT_BREAKER_RESET_TIME:
+                raise CircuitBreakerOpen(
+                    f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
+                )
+            # Try to reset the circuit breaker
+            logger.info("Circuit breaker attempting reset...")
+            self._circuit_open_time = None
+            self._failure_count = 0
+
+    def _record_success(self) -> None:
+        """Record a successful request, resetting failure count."""
+        self._failure_count = 0
+        self._circuit_open_time = None
+
+    def _record_failure(self) -> None:
+        """Record a failed request, potentially tripping the circuit breaker."""
+        self._failure_count += 1
+        if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
+            self._circuit_open_time = time.time()
+            logger.error(
+                f"Circuit breaker tripped after {self._failure_count} consecutive failures. "
+                f"Blocking requests for {CIRCUIT_BREAKER_RESET_TIME}s"
+            )
+
     def _make_request(
         self, url: str, retries: int = MAX_RETRIES
     ) -> BeautifulSoup | None:
-        # Make an HTTP request with exponential backoff retry logic
+        # Make an HTTP request with exponential backoff retry logic and circuit breaker
+        try:
+            self._check_circuit_breaker()
+        except CircuitBreakerOpen as e:
+            logger.warning(str(e))
+            return None
+
         for attempt in range(retries):
             try:
                 response = self.session.get(url, timeout=REQUEST_TIMEOUT)
                 response.raise_for_status()
+                self._record_success()
                 return BeautifulSoup(response.text, "html.parser")
             except RequestException as e:
                 logger.warning(
@@ -83,6 +131,7 @@ class ValorantClient:
                     logger.error(
                         f"Failed to fetch data from {url} after {retries} attempts"
                     )
+                    self._record_failure()
                     return None
         return None
 
@@ -90,7 +139,8 @@ class ValorantClient:
         # Get the URL for the selected event
         if choice in EVENTS:
             return EVENTS[choice].url
-        elif choice == "6":
+        exit_choice = str(len(EVENTS) + 1)
+        if choice == exit_choice:
             logger.info("User chose to exit")
             return None
         logger.warning(f"Invalid event choice: {choice}")
@@ -121,14 +171,22 @@ class ValorantClient:
         # Example: /596399/envy-vs-evil-geniuses-vct-2026-americas-kickoff-ur1
         match_pattern = re.compile(r"^/\d+/")
 
+        # Create slug pattern with word boundaries (using hyphen as delimiter)
+        # This prevents "vct" from matching "valorant-challengers-vct"
+        slug_pattern = None
+        if event_slug:
+            # Escape special regex characters and match as a complete segment
+            escaped_slug = re.escape(event_slug.lower())
+            slug_pattern = re.compile(rf"(^|-)({escaped_slug})(-|$)")
+
         match_links = []
         for link in soup.find_all("a", href=True):
             href = link["href"]
             # Must start with /<number>/
             if not match_pattern.match(href):
                 continue
-            # If we have a slug, verify it's in the href
-            if event_slug and event_slug.lower() not in href.lower():
+            # If we have a slug, verify it matches as a complete segment
+            if slug_pattern and not slug_pattern.search(href.lower()):
                 continue
             match_links.append(link)
 
@@ -166,7 +224,9 @@ class ValorantClient:
             # Check for "match has not started" or countdown timers like "19h 37m", "1d 5h"
             is_upcoming = (
                 score.lower().startswith("match has not started")
-                or bool(re.match(r"^\d+[dhm]\s", score))  # Countdown: "19h 37m", "1d 5h"
+                or bool(
+                    re.match(r"^\d+[dhm]\s", score)
+                )  # Countdown: "19h 37m", "1d 5h"
             )
 
             # If filtering for upcoming only, skip completed matches
@@ -195,8 +255,20 @@ class ValorantClient:
 
             return self._format_match_output(match)
 
+        except RequestException as e:
+            logger.error(f"Network error processing match {match_url}: {e}")
+            return None
+        except (AttributeError, TypeError, IndexError) as e:
+            logger.error(f"HTML parsing error for match {match_url}: {e}")
+            return None
+        except (KeyError, ValueError) as e:
+            logger.error(f"Data extraction error for match {match_url}: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Error processing match {match_url}: {str(e)}")
+            # Keep a catch-all but log full traceback for debugging
+            logger.error(
+                f"Unexpected error processing match {match_url}: {e}", exc_info=True
+            )
             return None
 
     def _extract_match_data(

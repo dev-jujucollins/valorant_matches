@@ -252,7 +252,7 @@ class TestValorantClient:
 
     def test_get_event_url_exit(self, client):
         """Test getting event URL for exit choice."""
-        url = client.get_event_url("6")
+        url = client.get_event_url("7")
         assert url is None
 
     @patch.object(ValorantClient, "_make_request")

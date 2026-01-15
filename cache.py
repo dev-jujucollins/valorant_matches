@@ -32,8 +32,8 @@ class MatchCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_cache_key(self, url: str) -> str:
-        """Generate a cache key from URL."""
-        return hashlib.md5(url.encode()).hexdigest()
+        """Generate a cache key from URL using SHA-256."""
+        return hashlib.sha256(url.encode()).hexdigest()
 
     def _get_cache_path(self, key: str) -> Path:
         """Get the file path for a cache key."""

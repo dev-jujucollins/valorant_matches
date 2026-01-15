@@ -4,22 +4,24 @@ from rich.text import Text
 from rich.theme import Theme
 
 # Custom theme for consistent styling across the application
-VALORANT_THEME = Theme({
-    "error": "bold bright_red",
-    "warning": "bright_yellow",
-    "success": "bright_green",
-    "info": "bright_blue",
-    "primary": "bright_cyan",
-    "secondary": "bright_magenta",
-    "muted": "bright_black",
-    "highlight": "bold bright_white",
-    "accent": "bright_yellow",
-    "team": "bold bright_cyan",
-    "score": "bold bright_green",
-    "live": "bold bright_red",
-    "date_time": "bright_blue",
-    "link": "underline bright_magenta",
-})
+VALORANT_THEME = Theme(
+    {
+        "error": "bold bright_red",
+        "warning": "bright_yellow",
+        "success": "bright_green",
+        "info": "bright_blue",
+        "primary": "bright_cyan",
+        "secondary": "bright_magenta",
+        "muted": "bright_black",
+        "highlight": "bold bright_white",
+        "accent": "bright_yellow",
+        "team": "bold bright_cyan",
+        "score": "bold bright_green",
+        "live": "bold bright_red",
+        "date_time": "bright_blue",
+        "link": "underline bright_magenta",
+    }
+)
 
 
 class Formatter:
@@ -28,7 +30,9 @@ class Formatter:
     def __init__(self):
         self.console = Console(theme=VALORANT_THEME, force_terminal=True)
 
-    def format(self, text: str, style: str, bold: bool = False, underline: bool = False) -> str:
+    def format(
+        self, text: str, style: str, bold: bool = False, underline: bool = False
+    ) -> str:
         """Format text with a style and optional modifiers."""
         style_parts = []
         if bold:

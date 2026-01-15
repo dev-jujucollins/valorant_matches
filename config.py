@@ -79,6 +79,9 @@ CACHE_ENABLED = get_env_bool("CACHE_ENABLED", True)
 CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 300)
 CACHE_DIR = Path(os.getenv("CACHE_DIR", ".cache"))
 
+# Rate limiting settings
+RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "0.5"))
+
 
 @dataclass
 class Event:
@@ -116,6 +119,21 @@ EVENTS: dict[str, Event] = {
         url=f"{BASE_URL}/event/matches/2766/valorant-champions-2026/",
         series_id="2766",
     ),
+    "6": Event(
+        name="Valorant Masters Bangkok 2026",
+        url=f"{BASE_URL}/event/matches/2767/valorant-masters-bangkok-2026/",
+        series_id="2767",
+    ),
+}
+
+# Mapping from canonical region names to EVENTS keys for fallback
+REGION_FALLBACK_KEYS: dict[str, str] = {
+    "americas": "1",
+    "emea": "2",
+    "pacific": "3",
+    "china": "4",
+    "champions": "5",
+    "masters": "6",
 }
 
 # HTTP headers
