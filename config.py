@@ -92,34 +92,31 @@ class Event:
 # Event configurations
 EVENTS: dict[str, Event] = {
     "1": Event(
-        name="VCT 25: Americas Kickoff",
-        url=f"{BASE_URL}/event/matches/2274/champions-tour-2025-americas-kickoff/",
-        series_id="4405",
+        name="VCT 26: Americas Kickoff",
+        url=f"{BASE_URL}/event/matches/2682/vct-2026-americas-kickoff/",
+        series_id="2682",
     ),
     "2": Event(
-        name="VCT 25: EMEA Kickoff",
-        url=f"{BASE_URL}/event/matches/2276/champions-tour-2025-emea-kickoff/",
-        series_id="4407",
+        name="VCT 26: EMEA Kickoff",
+        url=f"{BASE_URL}/event/matches/2684/vct-2026-emea-kickoff/",
+        series_id="2684",
     ),
     "3": Event(
-        name="VCT 25: APAC Kickoff",
-        url=f"{BASE_URL}/event/matches/2277/champions-tour-2025-pacific-kickoff/",
-        series_id="4408",
+        name="VCT 26: Pacific Kickoff",
+        url=f"{BASE_URL}/event/matches/2683/vct-2026-pacific-kickoff/",
+        series_id="2683",
     ),
     "4": Event(
-        name="VCT 25: China Kickoff",
-        url=f"{BASE_URL}/event/matches/2275/champions-tour-2025-china-kickoff/",
-        series_id="4406",
+        name="VCT 26: China Kickoff",
+        url=f"{BASE_URL}/event/matches/2685/vct-2026-china-kickoff/",
+        series_id="2685",
     ),
     "5": Event(
-        name="VCT 25: Champions - Playoffs",
-        url=f"{BASE_URL}/event/matches/2283/valorant-champions-2025/?series_id=5080/",
-        series_id="4416",
+        name="Valorant Champions 2026",
+        url=f"{BASE_URL}/event/matches/2766/valorant-champions-2026/",
+        series_id="2766",
     ),
 }
-
-# Match status codes to filter
-MATCH_CODES = ("427", "428", "429", "430", "431", "498", "499", "542")
 
 # HTTP headers
 HEADERS = {

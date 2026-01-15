@@ -166,3 +166,6 @@ settings.json
 .gitignore
 archived/
 .github/copilot-instructions.md
+CLAUDE.md
+AGENTS.md
+session_summary.md

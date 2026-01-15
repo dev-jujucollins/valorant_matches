@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from rich.progress import Progress
 
 from config import EVENTS, LOGGING_CONFIG, MAX_WORKERS
+from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
 from formatter import Formatter
 from valorant_client import ValorantClient
 
@@ -17,19 +18,10 @@ from valorant_client import ValorantClient
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
-# Region name mappings for CLI
-REGION_ALIASES = {
-    "americas": "1",
-    "am": "1",
-    "emea": "2",
-    "eu": "2",
-    "apac": "3",
-    "pacific": "3",
-    "china": "4",
-    "cn": "4",
-    "champions": "5",
-    "champs": "5",
-}
+# Flatten region aliases for argparse choices
+REGION_CHOICES = []
+for aliases in REGION_ALIASES.values():
+    REGION_CHOICES.extend(aliases)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,20 +36,23 @@ Examples:
   python main.py -r emea --upcoming       # Show upcoming EMEA matches
   python main.py -r china --results       # Show completed China matches
   python main.py --region champions --no-cache  # Force fresh data
+  python main.py --list-regions           # List available regions (auto-discovered)
+  python main.py --refresh                # Force refresh event discovery
 
 Available regions:
-  americas (am)    - VCT Americas Kickoff
-  emea (eu)        - VCT EMEA Kickoff
-  apac (pacific)   - VCT Pacific Kickoff
-  china (cn)       - VCT China Kickoff
-  champions        - VCT Champions Playoffs
+  americas (am)    - VCT Americas
+  emea (eu)        - VCT EMEA
+  pacific (apac)   - VCT Pacific
+  china (cn)       - VCT China
+  champions        - Valorant Champions
+  masters          - Valorant Masters
         """,
     )
     parser.add_argument(
         "-r",
         "--region",
         type=str,
-        choices=list(REGION_ALIASES.keys()),
+        choices=REGION_CHOICES,
         help="Region/event to fetch matches for",
     )
     parser.add_argument(
@@ -84,6 +79,11 @@ Available regions:
         "--list-regions",
         action="store_true",
         help="List available regions and exit",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Force refresh event discovery from vlr.gg",
     )
     return parser.parse_args()
 
@@ -141,7 +141,56 @@ def process_matches(
     return sorted(results, key=lambda x: match_links.index(x[0]))
 
 
-def run_cli_mode(args: argparse.Namespace, formatter: Formatter) -> int:
+def get_event_for_region(
+    region: str, discovery: EventDiscovery, force_refresh: bool = False
+) -> DiscoveredEvent | None:
+    """Get the best matching event for a region using auto-discovery with fallback."""
+    # Try auto-discovery first
+    events = discovery.get_events_by_region(region, force_refresh=force_refresh)
+
+    if events:
+        # Prefer ongoing events, then upcoming, then most recent
+        ongoing = [e for e in events if e.status == "ongoing"]
+        if ongoing:
+            return ongoing[0]
+        upcoming = [e for e in events if e.status == "upcoming"]
+        if upcoming:
+            return upcoming[0]
+        return events[0]
+
+    # Fallback to hardcoded config
+    logger.warning(f"No discovered events for {region}, falling back to config")
+    region_to_key = {
+        "americas": "1",
+        "emea": "2",
+        "pacific": "3",
+        "china": "4",
+        "champions": "5",
+    }
+
+    # Normalize region
+    for canonical, aliases in REGION_ALIASES.items():
+        if region.lower() in aliases:
+            key = region_to_key.get(canonical)
+            if key and key in EVENTS:
+                fallback = EVENTS[key]
+                return DiscoveredEvent(
+                    name=fallback.name,
+                    url=fallback.url,
+                    event_id=fallback.series_id,
+                    slug="",
+                    status="unknown",
+                    dates="",
+                    region=canonical,
+                )
+            break
+
+    return None
+
+
+def run_cli_mode(
+    args: argparse.Namespace, formatter: Formatter, discovery: EventDiscovery
+) -> int:
     """Run in CLI mode with command line arguments."""
     cache_enabled = not args.no_cache
     client = ValorantClient(cache_enabled=cache_enabled)
@@ -149,16 +198,20 @@ def run_cli_mode(args: argparse.Namespace, formatter: Formatter) -> int:
     if args.no_cache:
         logger.info("Cache disabled via --no-cache flag")
 
-    # Get event URL from region
-    event_key = REGION_ALIASES.get(args.region)
-    if not event_key or event_key not in EVENTS:
-        print(f"\n{formatter.error(f'Invalid region: {args.region}')}\n")
+    # Get event using auto-discovery
+    event = get_event_for_region(
+        args.region, discovery, force_refresh=getattr(args, "refresh", False)
+    )
+    if not event:
+        print(f"\n{formatter.error(f'No events found for region: {args.region}')}\n")
         return 1
 
-    event = EVENTS[event_key]
-    print(f"\n{formatter.info(f'Fetching matches for: {event.name}', bold=True)}\n")
+    status_str = f" ({event.status})" if event.status != "unknown" else ""
+    print(
+        f"\n{formatter.info(f'Fetching matches for: {event.name}{status_str}', bold=True)}\n"
+    )
 
-    match_links = client.fetch_event_matches(event.url)
+    match_links = client.fetch_event_matches(event.url, event.slug)
     if not match_links:
         print(f"\n{formatter.warning('No matches found for the selected event')}\n")
         return 0
@@ -184,27 +237,68 @@ def run_cli_mode(args: argparse.Namespace, formatter: Formatter) -> int:
     return 0
 
 
-def run_interactive_mode(formatter: Formatter) -> int:
+def run_interactive_mode(formatter: Formatter, discovery: EventDiscovery) -> int:
     """Run in interactive mode with menus."""
     client = ValorantClient()
 
     while True:
         try:
-            selected_option = client.display_menu()
-            if selected_option == "6":
+            # Discover events and build menu
+            events = discovery.discover_events()
+            if not events:
+                # Fallback to hardcoded events
+                logger.warning("No events discovered, using fallback config")
+                events = [
+                    DiscoveredEvent(
+                        name=e.name,
+                        url=e.url,
+                        event_id=e.series_id,
+                        slug="",
+                        status="unknown",
+                        dates="",
+                        region="",
+                    )
+                    for e in EVENTS.values()
+                ]
+
+            # Display event menu
+            print(f"\n{formatter.info(' Available Events:', bold=True)}")
+            for i, event in enumerate(events, 1):
+                status = f" [{event.status}]" if event.status != "unknown" else ""
+                print(
+                    f"{formatter.primary(f'{i}.', bold=True)} "
+                    f"{formatter.highlight(event.name)}"
+                    f"{formatter.muted(status)}"
+                )
+            print(
+                f"{formatter.primary(f'{len(events) + 1}.', bold=True)} "
+                f"{formatter.muted('Exit')}\n"
+            )
+
+            selected = input(
+                f"{formatter.info('Select an event:', bold=True)} "
+            ).strip()
+
+            # Handle exit
+            if selected == str(len(events) + 1):
                 logger.info("User chose to exit")
                 print(
                     f"\n{formatter.success('Thank you for using the Valorant Match Tracker!')}"
                 )
                 break
 
-            event_url = client.get_event_url(selected_option)
-            if not event_url:
+            # Validate selection
+            try:
+                idx = int(selected) - 1
+                if idx < 0 or idx >= len(events):
+                    raise ValueError()
+                event = events[idx]
+            except ValueError:
                 logger.warning("Invalid event selection")
                 print(f"\n{formatter.error('Invalid choice. Please try again.')}\n")
                 continue
 
-            match_links = client.fetch_event_matches(event_url)
+            match_links = client.fetch_event_matches(event.url, event.slug)
             if not match_links:
                 logger.warning("No matches found for selected event")
                 print(
@@ -268,28 +362,48 @@ def main() -> None:
         print(f"{formatter.success(f'Cleared {count} cache entries.')}")
         sys.exit(0)
 
+    # Initialize event discovery
+    discovery = EventDiscovery()
+    force_refresh = getattr(args, "refresh", False)
+
     if args.list_regions:
-        print(f"\n{formatter.info('Available regions:', bold=True)}\n")
-        for key, event in EVENTS.items():
-            # Find aliases for this key
-            aliases = [alias for alias, k in REGION_ALIASES.items() if k == key]
-            alias_str = ", ".join(aliases) if aliases else ""
-            print(f"  {formatter.primary(alias_str, bold=True)}: {event.name}")
-        print()
+        print(f"\n{formatter.info('Discovering VCT events...', bold=True)}\n")
+        events = discovery.discover_events(force_refresh=force_refresh)
+
+        if events:
+            print(f"{formatter.info('Available events:', bold=True)}\n")
+            # Group by region
+            by_region: dict[str, list[DiscoveredEvent]] = {}
+            for event in events:
+                by_region.setdefault(event.region, []).append(event)
+
+            for region, region_events in sorted(by_region.items()):
+                aliases = REGION_ALIASES.get(region, [region])
+                alias_str = ", ".join(aliases)
+                print(f"  {formatter.primary(alias_str, bold=True)}:")
+                for event in region_events:
+                    status = f" [{event.status}]" if event.status else ""
+                    print(f"    - {event.name}{formatter.muted(status)}")
+                print()
+        else:
+            print(f"{formatter.warning('No events discovered, showing fallback:')}\n")
+            for key, event in EVENTS.items():
+                print(f"  {formatter.primary(key, bold=True)}: {event.name}")
+            print()
         sys.exit(0)
 
     print(
-        f"\n{formatter.format('Valorant Champions Tour 2025', 'bright_cyan', bold=True)}"
+        f"\n{formatter.format('Valorant Champions Tour', 'bright_cyan', bold=True)}"
     )
     print(f"{formatter.format('=' * 40, 'bright_magenta')}\n")
 
     # Determine mode based on arguments
     if args.region:
         # CLI mode
-        exit_code = run_cli_mode(args, formatter)
+        exit_code = run_cli_mode(args, formatter, discovery)
     else:
         # Interactive mode
-        exit_code = run_interactive_mode(formatter)
+        exit_code = run_interactive_mode(formatter, discovery)
 
     logger.info("Application shutdown complete")
     sys.exit(exit_code)

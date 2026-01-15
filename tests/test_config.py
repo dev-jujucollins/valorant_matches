@@ -89,11 +89,6 @@ class TestConfigValues:
         assert event.name is not None
         assert event.url is not None
 
-    def test_match_codes_defined(self):
-        """Test MATCH_CODES is defined."""
-        from config import MATCH_CODES
-        assert len(MATCH_CODES) > 0
-
     def test_headers_defined(self):
         """Test HEADERS is defined with User-Agent."""
         from config import HEADERS

@@ -2,6 +2,7 @@
 
 import logging
 import logging.config
+import re
 import time
 from dataclasses import asdict, dataclass
 from urllib.parse import urljoin
@@ -16,7 +17,6 @@ from config import (
     EVENTS,
     HEADERS,
     LOGGING_CONFIG,
-    MATCH_CODES,
     MAX_RETRIES,
     REQUEST_TIMEOUT,
     RETRY_DELAY,
@@ -96,18 +96,42 @@ class ValorantClient:
         logger.warning(f"Invalid event choice: {choice}")
         return None
 
-    def fetch_event_matches(self, event_url: str) -> list[dict]:
-        # Fetch all matches for an event
+    def fetch_event_matches(
+        self, event_url: str, event_slug: str | None = None
+    ) -> list[dict]:
+        """Fetch all matches for an event.
+
+        Args:
+            event_url: The event matches page URL
+            event_slug: Optional event slug to filter matches (e.g., 'vct-2026-americas-kickoff')
+                       If not provided, extracts from event_url automatically.
+        """
         logger.info(f"Fetching matches for event:\n{event_url}\n")
         soup = self._make_request(event_url)
         if not soup:
             return []
 
-        match_links = [
-            link
-            for link in soup.find_all("a", href=True)
-            if any(code in link["href"] for code in MATCH_CODES)
-        ]
+        # Extract event slug from URL if not provided
+        if not event_slug:
+            slug_match = re.search(r"/event/matches/\d+/([^/]+)", event_url)
+            if slug_match:
+                event_slug = slug_match.group(1)
+
+        # Match pattern: links starting with /<number>/ that contain the event slug
+        # Example: /596399/envy-vs-evil-geniuses-vct-2026-americas-kickoff-ur1
+        match_pattern = re.compile(r"^/\d+/")
+
+        match_links = []
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            # Must start with /<number>/
+            if not match_pattern.match(href):
+                continue
+            # If we have a slug, verify it's in the href
+            if event_slug and event_slug.lower() not in href.lower():
+                continue
+            match_links.append(link)
+
         logger.info(f"Found {len(match_links)} matches")
         return match_links
 
@@ -139,7 +163,11 @@ class ValorantClient:
             match_date, match_time = self._extract_date_time(soup)
 
             # Determine if this is an upcoming match
-            is_upcoming = score.lower().startswith("match has not started")
+            # Check for "match has not started" or countdown timers like "19h 37m", "1d 5h"
+            is_upcoming = (
+                score.lower().startswith("match has not started")
+                or bool(re.match(r"^\d+[dhm]\s", score))  # Countdown: "19h 37m", "1d 5h"
+            )
 
             # If filtering for upcoming only, skip completed matches
             if upcoming_only and not is_upcoming and not is_live:

@@ -257,19 +257,23 @@ class TestValorantClient:
 
     @patch.object(ValorantClient, "_make_request")
     def test_fetch_event_matches(self, mock_request, client):
-        """Test fetching event matches."""
+        """Test fetching event matches using slug-based matching."""
         mock_html = """
         <html>
         <body>
-            <a href="/427/match1">Match 1</a>
-            <a href="/428/match2">Match 2</a>
+            <a href="/594001/team-a-vs-team-b-vct-2026-test-event-ur1">Match 1</a>
+            <a href="/595002/team-c-vs-team-d-vct-2026-test-event-ur1">Match 2</a>
             <a href="/other/link">Other Link</a>
+            <a href="/123456/some-other-event-match">Wrong event</a>
         </body>
         </html>
         """
         mock_request.return_value = BeautifulSoup(mock_html, "html.parser")
 
-        matches = client.fetch_event_matches("https://vlr.gg/event/123")
+        # URL contains slug 'vct-2026-test-event' which matches the first two hrefs
+        matches = client.fetch_event_matches(
+            "https://vlr.gg/event/matches/2682/vct-2026-test-event/"
+        )
 
         assert len(matches) == 2
 
