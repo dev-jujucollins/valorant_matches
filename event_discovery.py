@@ -176,15 +176,15 @@ class EventDiscovery:
             if not self._is_vct_international(name):
                 continue
 
-            # Determine status from parent or sibling elements
-            status = "upcoming"
-            parent = link.find_parent(class_=re.compile(r"event"))
-            if parent:
-                parent_text = parent.get_text().lower()
-                if "ongoing" in parent_text:
-                    status = "ongoing"
-                elif "completed" in parent_text:
-                    status = "completed"
+            # Determine status from link text content
+            # vlr.gg format: "Event Name|ongoing|Status|Prize|..."
+            link_text = link.get_text(separator="|", strip=True).lower()
+            if "|ongoing|" in link_text:
+                status = "ongoing"
+            elif "|completed|" in link_text:
+                status = "completed"
+            else:
+                status = "upcoming"
 
             # Extract dates if available
             dates = ""
