@@ -164,10 +164,7 @@ class EventDiscovery:
                     r"((?:VCT \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)",
                     raw_name,
                 )
-                if name_match:
-                    name = name_match.group(1).strip()
-                else:
-                    name = raw_name[:50]  # Truncate if nothing matches
+                name = name_match.group(1).strip() if name_match else raw_name[:50]
 
             if not name or len(name) < 5:
                 continue
