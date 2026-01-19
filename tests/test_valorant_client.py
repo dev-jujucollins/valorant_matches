@@ -62,6 +62,28 @@ def sample_upcoming_match_html():
     """
 
 
+@pytest.fixture
+def sample_upcoming_match_with_countdown_html():
+    """Sample HTML for an upcoming match page with countdown."""
+    return """
+    <html>
+    <body>
+        <div class="wf-title-med">100 Thieves</div>
+        <div class="wf-title-med">Evil Geniuses</div>
+        <div class="match-header-vs-score">
+            <div class="match-header-vs-note">
+                <span class="match-header-vs-note mod-upcoming">
+                    1h 30m
+                </span>
+            </div>
+        </div>
+        <div class="moment-tz-convert">December 25, 2025</div>
+        <div>2:00 PM EST</div>
+    </body>
+    </html>
+    """
+
+
 class TestMatch:
     def test_match_dataclass(self):
         """Test Match dataclass creation."""
@@ -151,6 +173,15 @@ class TestValorantClient:
 
         assert score == "Match has not started yet."
 
+    def test_extract_score_countdown(
+        self, client, sample_upcoming_match_with_countdown_html
+    ):
+        """Test score extraction for upcoming match with countdown."""
+        soup = BeautifulSoup(sample_upcoming_match_with_countdown_html, "html.parser")
+        score = client._extract_score(soup)
+
+        assert score == "1h 30m"
+
     def test_extract_live_status_live(self, client, sample_live_match_html):
         """Test live status extraction for live match."""
         soup = BeautifulSoup(sample_live_match_html, "html.parser")
@@ -239,6 +270,39 @@ class TestValorantClient:
         assert "Evil Geniuses" in output
         assert "UPCOMING" in output
 
+    def test_format_match_output_upcoming_with_eta(self, client):
+        """Test formatting upcoming match output with countdown ETA."""
+        match = Match(
+            date="Dec 25, 2025",
+            time="2:00 PM",
+            team1="100 Thieves",
+            team2="Evil Geniuses",
+            score="1h 30m",
+            is_live=False,
+            url="https://vlr.gg/match/12347",
+            is_upcoming=True,
+        )
+
+        output = client._format_match_output(match)
+
+        assert "100 Thieves" in output
+        assert "Evil Geniuses" in output
+        assert "in 1h 30m" in output
+        assert "UPCOMING" not in output
+
+    def test_format_eta_with_countdown(self, client):
+        """Test _format_eta with countdown patterns."""
+        assert client._format_eta("1h 30m") == "in 1h 30m"
+        assert client._format_eta("2d 5h") == "in 2d 5h"
+        assert client._format_eta("0h 42m") == "in 0h 42m"
+        assert client._format_eta("5m 30s") == "in 5m 30s"
+
+    def test_format_eta_fallback(self, client):
+        """Test _format_eta fallback to UPCOMING."""
+        assert client._format_eta("Match has not started yet.") == "UPCOMING"
+        assert client._format_eta("") == "UPCOMING"
+        assert client._format_eta("vs") == "UPCOMING"
+
     def test_get_event_url_valid(self, client):
         """Test getting event URL for valid choice."""
         url = client.get_event_url("1")
@@ -317,9 +381,10 @@ class TestMakeRequest:
     @patch("valorant_client.requests.Session.get")
     def test_make_request_retry_on_failure(self, mock_get):
         """Test request retry on failure."""
-        from requests.exceptions import RequestException
+        from requests.exceptions import ConnectionError as ReqConnectionError
 
-        mock_get.side_effect = RequestException("Connection failed")
+        # Use ConnectionError which is a retryable error type
+        mock_get.side_effect = ReqConnectionError("Connection failed")
 
         with (
             patch("valorant_client.MatchCache"),

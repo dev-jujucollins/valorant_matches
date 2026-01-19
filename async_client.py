@@ -1,117 +1,95 @@
-# Core functionality for fetching and processing Valorant match data.
+# Async HTTP client for high-performance match fetching.
 
+import asyncio
 import logging
-import logging.config
 import re
-
-# Thread-safe rate limiter
-import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from urllib.parse import urljoin
 
-import requests
+import aiohttp
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from requests.exceptions import (
-    ConnectionError,
-    HTTPError,
-    RequestException,
-    Timeout,
-)
 
 from cache import MatchCache
 from config import (
     BASE_URL,
-    EVENTS,
     HEADERS,
-    LOGGING_CONFIG,
     MAX_RETRIES,
     RATE_LIMIT_DELAY,
     REQUEST_TIMEOUT,
     RETRY_DELAY,
 )
 from formatter import Formatter
+from valorant_client import (
+    COUNTDOWN_PATTERN,
+    EVENT_SLUG_PATTERN,
+    MATCH_URL_PATTERN,
+    CircuitBreakerOpen,
+    Match,
+)
 
-_rate_limit_lock = threading.Lock()
-_last_request_time = 0.0
-
-
-def _apply_rate_limit() -> None:
-    """Apply thread-safe rate limiting before requests."""
-    global _last_request_time
-    with _rate_limit_lock:
-        now = time.time()
-        elapsed = now - _last_request_time
-        if elapsed < RATE_LIMIT_DELAY:
-            time.sleep(RATE_LIMIT_DELAY - elapsed)
-        _last_request_time = time.time()
-
-
-# Configure logging
-logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
-
-# Pre-compiled regex patterns for performance
-MATCH_URL_PATTERN = re.compile(r"^/\d+/")
-EVENT_SLUG_PATTERN = re.compile(r"/event/matches/\d+/([^/]+)")
-COUNTDOWN_PATTERN = re.compile(r"^\d+[dhm]\s")
 
 # Maximum backoff delay in seconds
 MAX_BACKOFF_DELAY = 30
 
 # Circuit breaker settings
-CIRCUIT_BREAKER_THRESHOLD = 5  # Number of consecutive failures to trip
-CIRCUIT_BREAKER_RESET_TIME = 60  # Seconds before attempting to reset
+CIRCUIT_BREAKER_THRESHOLD = 5
+CIRCUIT_BREAKER_RESET_TIME = 60
 
 
-@dataclass
-class Match:
-    # Represents a Valorant match
+class AsyncRateLimiter:
+    """Async-compatible rate limiter."""
 
-    date: str
-    time: str
-    team1: str
-    team2: str
-    score: str
-    is_live: bool
-    url: str
-    is_upcoming: bool = False
+    def __init__(self, delay: float = RATE_LIMIT_DELAY):
+        self._delay = delay
+        self._last_request = 0.0
+        self._lock = asyncio.Lock()
 
-
-class CircuitBreakerOpen(Exception):
-    """Raised when the circuit breaker is open and requests are blocked."""
-
-    pass
+    async def acquire(self) -> None:
+        """Wait for rate limit before proceeding."""
+        async with self._lock:
+            now = time.time()
+            elapsed = now - self._last_request
+            if elapsed < self._delay:
+                await asyncio.sleep(self._delay - elapsed)
+            self._last_request = time.time()
 
 
-class ValorantClient:
-    # Client for fetching and processing Valorant match data
+class AsyncValorantClient:
+    """Async client for fetching and processing Valorant match data."""
 
     def __init__(self, cache_enabled: bool = True):
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-
-        # Configure connection pooling for better performance
-        adapter = HTTPAdapter(
-            pool_connections=10,  # Number of connection pools
-            pool_maxsize=20,  # Max connections per pool
-            max_retries=0,  # We handle retries ourselves
-        )
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-
         self.formatter = Formatter()
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
-        # Circuit breaker state
         self._failure_count = 0
         self._circuit_open_time: float | None = None
-        # Slug pattern cache for performance
         self._slug_pattern_cache: dict[str, re.Pattern] = {}
+        self._rate_limiter = AsyncRateLimiter()
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self) -> "AsyncValorantClient":
+        """Async context manager entry."""
+        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+        connector = aiohttp.TCPConnector(
+            limit=20,  # Max concurrent connections
+            limit_per_host=10,  # Per-host limit
+        )
+        self._session = aiohttp.ClientSession(
+            headers=HEADERS,
+            timeout=timeout,
+            connector=connector,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit."""
+        if self._session:
+            await self._session.close()
 
     def _get_slug_pattern(self, slug: str) -> re.Pattern:
-        """Get or create a compiled slug pattern (cached for performance)."""
+        """Get or create a compiled slug pattern (cached)."""
         if slug not in self._slug_pattern_cache:
             escaped_slug = re.escape(slug.lower())
             self._slug_pattern_cache[slug] = re.compile(rf"(^|-)({escaped_slug})(-|$)")
@@ -120,59 +98,46 @@ class ValorantClient:
     def _calculate_backoff(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter."""
         delay = RETRY_DELAY * (2**attempt)
-        # Add some jitter (0-25% of delay)
         jitter = delay * 0.25 * (time.time() % 1)
         return min(delay + jitter, MAX_BACKOFF_DELAY)
 
     def _check_circuit_breaker(self) -> None:
-        """Check if circuit breaker allows requests. Raises CircuitBreakerOpen if not."""
+        """Check if circuit breaker allows requests."""
         if self._circuit_open_time is not None:
             elapsed = time.time() - self._circuit_open_time
             if elapsed < CIRCUIT_BREAKER_RESET_TIME:
                 raise CircuitBreakerOpen(
                     f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
                 )
-            # Try to reset the circuit breaker
             logger.info("Circuit breaker attempting reset...")
             self._circuit_open_time = None
             self._failure_count = 0
 
     def _record_success(self) -> None:
-        """Record a successful request, resetting failure count."""
+        """Record a successful request."""
         self._failure_count = 0
         self._circuit_open_time = None
 
     def _record_failure(self) -> None:
-        """Record a failed request, potentially tripping the circuit breaker."""
+        """Record a failed request."""
         self._failure_count += 1
         if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
             self._circuit_open_time = time.time()
             logger.error(
-                f"Circuit breaker tripped after {self._failure_count} consecutive failures. "
-                f"Blocking requests for {CIRCUIT_BREAKER_RESET_TIME}s"
+                f"Circuit breaker tripped after {self._failure_count} failures"
             )
 
-    def _is_retryable_error(
-        self, error: Exception, response: requests.Response | None = None
-    ) -> bool:
-        """Determine if an error is transient and worth retrying."""
-        # Connection errors and timeouts are always retryable
-        if isinstance(error, (ConnectionError, Timeout)):
-            return True
+    def _is_retryable_status(self, status: int) -> bool:
+        """Check if HTTP status code is retryable."""
+        return status >= 500 or status == 429
 
-        # For HTTP errors, check the status code
-        if isinstance(error, HTTPError) and response is not None:
-            # 5xx errors are server-side and often transient
-            # 429 (Too Many Requests) is also retryable after backoff
-            return response.status_code >= 500 or response.status_code == 429
-
-        # Other errors (4xx client errors, etc.) are not retryable
-        return False
-
-    def _make_request(
+    async def _make_request(
         self, url: str, retries: int = MAX_RETRIES
     ) -> BeautifulSoup | None:
-        # Make an HTTP request with exponential backoff retry logic and circuit breaker
+        """Make an async HTTP request with retry logic."""
+        if not self._session:
+            raise RuntimeError("Client not initialized. Use async with context.")
+
         try:
             self._check_circuit_breaker()
         except CircuitBreakerOpen as e:
@@ -180,82 +145,69 @@ class ValorantClient:
             return None
 
         for attempt in range(retries):
-            response = None
             try:
-                # Apply rate limiting before each request attempt
-                _apply_rate_limit()
-                response = self.session.get(url, timeout=REQUEST_TIMEOUT)
-                response.raise_for_status()
-                self._record_success()
-                return BeautifulSoup(response.text, "lxml")
-            except RequestException as e:
-                # Check if this error is worth retrying
-                is_retryable = self._is_retryable_error(e, response)
+                await self._rate_limiter.acquire()
+                async with self._session.get(url) as response:
+                    if response.status >= 400:
+                        if (
+                            self._is_retryable_status(response.status)
+                            and attempt < retries - 1
+                        ):
+                            logger.warning(
+                                f"Retryable status {response.status} (attempt {attempt + 1})"
+                            )
+                            await asyncio.sleep(self._calculate_backoff(attempt))
+                            continue
+                        else:
+                            logger.warning(f"HTTP error {response.status} for {url}")
+                            self._record_failure()
+                            return None
 
-                if is_retryable and attempt < retries - 1:
-                    logger.warning(
-                        f"Transient error (attempt {attempt + 1}/{retries}): {str(e)}"
-                    )
-                    backoff_delay = self._calculate_backoff(attempt)
-                    logger.debug(f"Retrying in {backoff_delay:.2f}s...")
-                    time.sleep(backoff_delay)
-                elif not is_retryable:
-                    # Permanent error - don't retry
-                    logger.warning(f"Permanent error, not retrying: {str(e)}")
-                    self._record_failure()
-                    return None
+                    text = await response.text()
+                    self._record_success()
+                    return BeautifulSoup(text, "lxml")
+
+            except TimeoutError:
+                if attempt < retries - 1:
+                    logger.warning(f"Timeout (attempt {attempt + 1}/{retries})")
+                    await asyncio.sleep(self._calculate_backoff(attempt))
                 else:
-                    # Exhausted retries
-                    logger.error(
-                        f"Failed to fetch data from {url} after {retries} attempts"
-                    )
+                    logger.error(f"Timeout after {retries} attempts for {url}")
                     self._record_failure()
                     return None
+
+            except aiohttp.ClientError as e:
+                if attempt < retries - 1:
+                    logger.warning(f"Client error (attempt {attempt + 1}): {e}")
+                    await asyncio.sleep(self._calculate_backoff(attempt))
+                else:
+                    logger.error(f"Failed after {retries} attempts: {e}")
+                    self._record_failure()
+                    return None
+
         return None
 
-    def get_event_url(self, choice: str) -> str | None:
-        # Get the URL for the selected event
-        if choice in EVENTS:
-            return EVENTS[choice].url
-        exit_choice = str(len(EVENTS) + 1)
-        if choice == exit_choice:
-            logger.info("User chose to exit")
-            return None
-        logger.warning(f"Invalid event choice: {choice}")
-        return None
-
-    def fetch_event_matches(
+    async def fetch_event_matches(
         self, event_url: str, event_slug: str | None = None
     ) -> list[dict]:
-        """Fetch all matches for an event.
-
-        Args:
-            event_url: The event matches page URL
-            event_slug: Optional event slug to filter matches (e.g., 'vct-2026-americas-kickoff')
-                       If not provided, extracts from event_url automatically.
-        """
+        """Fetch all matches for an event asynchronously."""
         logger.info(f"Fetching matches for event:\n{event_url}\n")
-        soup = self._make_request(event_url)
+        soup = await self._make_request(event_url)
         if not soup:
             return []
 
-        # Extract event slug from URL if not provided (using pre-compiled pattern)
         if not event_slug:
             slug_match = EVENT_SLUG_PATTERN.search(event_url)
             if slug_match:
                 event_slug = slug_match.group(1)
 
-        # Get cached slug pattern for word boundary matching
         slug_pattern = self._get_slug_pattern(event_slug) if event_slug else None
 
-        # Find matching links using pre-compiled patterns
         match_links = []
         for link in soup.find_all("a", href=True):
             href = link["href"]
-            # Must start with /<number>/ (using pre-compiled MATCH_URL_PATTERN)
             if not MATCH_URL_PATTERN.match(href):
                 continue
-            # If we have a slug, verify it matches as a complete segment
             if slug_pattern and not slug_pattern.search(href.lower()):
                 continue
             match_links.append(link)
@@ -263,24 +215,22 @@ class ValorantClient:
         logger.info(f"Found {len(match_links)} match links")
         return match_links
 
-    def process_match(self, link: dict, upcoming_only: bool = False) -> str | None:
-        # Process a single match and return formatted output
+    async def process_match(
+        self, link: dict, upcoming_only: bool = False
+    ) -> str | None:
+        """Process a single match asynchronously."""
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
         try:
-            # Check cache first (but not for upcoming matches filter)
             if not upcoming_only and self._cache_enabled:
                 cached_data = self.cache.get(match_url)
                 if cached_data:
                     cached_match = Match(**cached_data)
-                    # Don't use cache for live matches (need fresh data)
-                    # Also don't use cache for matches that were previously upcoming
-                    # (they may have completed since caching)
                     if not cached_match.is_live and not cached_match.is_upcoming:
                         return self._format_match_output(cached_match)
 
-            soup = self._make_request(match_url)
+            soup = await self._make_request(match_url)
             if not soup:
                 return None
 
@@ -290,13 +240,10 @@ class ValorantClient:
 
             match_date, match_time = self._extract_date_time(soup)
 
-            # Determine if this is an upcoming match
-            # Check for "match has not started" or countdown timers like "19h 37m", "1d 5h"
             is_upcoming = score.lower().startswith("match has not started") or bool(
                 COUNTDOWN_PATTERN.match(score)
             )
 
-            # If filtering for upcoming only, skip completed matches
             if upcoming_only and not is_upcoming and not is_live:
                 return None
 
@@ -311,31 +258,15 @@ class ValorantClient:
                 is_upcoming=is_upcoming,
             )
 
-            # Cache only completed matches (not live or upcoming)
-            # This ensures transitioning matches get fresh data
             if self._cache_enabled and not match.is_live and not match.is_upcoming:
                 self.cache.set(match_url, asdict(match))
             elif self._cache_enabled:
-                # Invalidate cache for matches that are now live/upcoming
-                # (in case they were previously cached as completed incorrectly)
                 self.cache.invalidate(match_url)
 
             return self._format_match_output(match)
 
-        except RequestException as e:
-            logger.error(f"Network error processing match {match_url}: {e}")
-            return None
-        except (AttributeError, TypeError, IndexError) as e:
-            logger.error(f"HTML parsing error for match {match_url}: {e}")
-            return None
-        except (KeyError, ValueError) as e:
-            logger.error(f"Data extraction error for match {match_url}: {e}")
-            return None
         except Exception as e:
-            # Keep a catch-all but log full traceback for debugging
-            logger.error(
-                f"Unexpected error processing match {match_url}: {e}", exc_info=True
-            )
+            logger.error(f"Error processing match {match_url}: {e}")
             return None
 
     def _extract_match_data(
@@ -348,7 +279,7 @@ class ValorantClient:
         return teams, score, is_live
 
     def _extract_teams(self, soup: BeautifulSoup) -> list[str]:
-        """Extract team names with fallback selectors ."""
+        """Extract team names with fallback selectors."""
         team_selectors = [
             ("div", "wf-title-med"),
             ("div", "match-header-link-name"),
@@ -363,11 +294,10 @@ class ValorantClient:
                 if all(teams):
                     return teams
 
-        logger.warning("Could not extract team names with any selector")
         return ["Unknown Team 1", "Unknown Team 2"]
 
     def _extract_score(self, soup: BeautifulSoup) -> str:
-        """Extract match score with fallback selectors ."""
+        """Extract match score with fallback selectors."""
         # First, check for upcoming match countdown (e.g., "0h 38m", "1d 5h")
         upcoming_elem = soup.find("span", class_="match-header-vs-note mod-upcoming")
         if upcoming_elem:
@@ -394,7 +324,7 @@ class ValorantClient:
         return "Match has not started yet."
 
     def _extract_live_status(self, soup: BeautifulSoup) -> bool:
-        """Extract live status with fallback selectors ."""
+        """Extract live status with fallback selectors."""
         live_selectors = [
             ("span", "match-header-vs-note mod-live"),
             ("span", "mod-live"),
@@ -427,7 +357,6 @@ class ValorantClient:
                 if match_date and match_date != "Unknown date":
                     return match_date, match_time
 
-        logger.debug("Could not extract date/time with any selector")
         return "Unknown date", "Unknown time"
 
     def _format_eta(self, score: str) -> str:
@@ -444,13 +373,12 @@ class ValorantClient:
         return "UPCOMING"
 
     def _format_match_output(self, match: Match) -> str:
-        # Format match data for display
+        """Format match data for display."""
         separator = "─" * 100
         date_time = self.formatter.date_time(f"{match.date}  {match.time}")
         teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
         stats_link = self.formatter.stats_link(f"Stats: {match.url}")
 
-        # Determine status and score display
         if match.is_live:
             status = self.formatter.live_status("LIVE")
             score = self.formatter.score(match.score)
@@ -464,31 +392,39 @@ class ValorantClient:
             score = self.formatter.score(match.score)
             return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.formatter.muted(separator)}\n"
 
-    def display_menu(self) -> str:
-        # Display the event selection menu
-        print(f"\n{self.formatter.info(' Available Regions:', bold=True)}")
-        for key, event in EVENTS.items():
-            print(
-                f"{self.formatter.primary(f'{key}.', bold=True)} {self.formatter.highlight(event.name)}"
-            )
-        print(
-            f"{self.formatter.primary('6.', bold=True)} {self.formatter.muted('Exit')}\n"
-        )
-        return input(f"{self.formatter.info('Select an event:', bold=True)} ").strip()
 
-    def display_view_mode_menu(self) -> str:
-        # Display the view mode selection menu
-        print(f"\n{self.formatter.info(' View Mode:', bold=True)}")
-        print(
-            f"{self.formatter.primary('1.', bold=True)} {self.formatter.highlight('All Matches')}"
-        )
-        print(
-            f"{self.formatter.primary('2.', bold=True)} {self.formatter.highlight('Results Only')} {self.formatter.muted('(completed matches)')}"
-        )
-        print(
-            f"{self.formatter.primary('3.', bold=True)} {self.formatter.highlight('Upcoming Only')} {self.formatter.muted('(scheduled matches)')}"
-        )
-        print(
-            f"{self.formatter.primary('4.', bold=True)} {self.formatter.muted('Back to Events')}\n"
-        )
-        return input(f"{self.formatter.info('Select view mode:', bold=True)} ").strip()
+async def process_matches_async(
+    client: AsyncValorantClient,
+    match_links: list[dict],
+    view_mode: str = "all",
+    progress_callback=None,
+) -> list[tuple]:
+    """Process matches concurrently using asyncio."""
+    results = []
+    upcoming_only = view_mode == "upcoming"
+    results_only = view_mode == "results"
+
+    # Create tasks for all matches
+    async def process_single(link):
+        result = await client.process_match(link, upcoming_only)
+        if progress_callback:
+            progress_callback()
+        return (link, result)
+
+    # Process all matches concurrently
+    tasks = [process_single(link) for link in match_links]
+    completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for item in completed:
+        if isinstance(item, BaseException):
+            logger.warning(f"Failed to process match: {item}")
+            continue
+        # item is now guaranteed to be tuple[dict, str | None]
+        link, result = item
+        if result is not None:
+            if results_only and "UPCOMING" in result:
+                continue
+            results.append((link, result))
+
+    # Sort by original order
+    return sorted(results, key=lambda x: match_links.index(x[0]))

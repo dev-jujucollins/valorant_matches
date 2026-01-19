@@ -1,20 +1,18 @@
 #!/usr/bin/python3
 
 import argparse
+import asyncio
 import json
 import logging
 import logging.config
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from rich.progress import Progress
 
+from async_client import AsyncValorantClient, process_matches_async
 from config import (
     EVENTS,
     LOGGING_CONFIG,
-    MAX_WORKERS,
-    RATE_LIMIT_DELAY,
     REGION_FALLBACK_KEYS,
 )
 from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
@@ -104,51 +102,51 @@ def get_view_mode(args: argparse.Namespace) -> str:
     return "all"
 
 
+async def process_matches_with_progress(
+    client: AsyncValorantClient,
+    match_links: list[dict],
+    view_mode: str = "all",
+) -> list[tuple]:
+    """Process matches asynchronously with progress display."""
+    task_label = {
+        "all": "Fetching all matches...",
+        "results": "Fetching match results...",
+        "upcoming": "Fetching upcoming matches...",
+    }.get(view_mode, "Fetching matches...")
+
+    with Progress() as progress:
+        task = progress.add_task(
+            f"[bright_magenta] {task_label}",
+            total=len(match_links),
+        )
+
+        def update_progress():
+            progress.update(task, advance=1)
+
+        results = await process_matches_async(
+            client, match_links, view_mode, progress_callback=update_progress
+        )
+
+    print("")
+    return results
+
+
 def process_matches(
     client: ValorantClient,
     match_links: list[dict],
     view_mode: str = "all",
 ) -> list[tuple]:
-    # Process matches concurrently and return results.
-    # view_mode: "all", "results", or "upcoming"
-    results = []
-    upcoming_only = view_mode == "upcoming"
-    results_only = view_mode == "results"
+    """Process matches using async client (sync wrapper for backward compatibility)."""
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures_to_link = {
-            executor.submit(client.process_match, link, upcoming_only): link
-            for link in match_links
-        }
-
-        task_label = {
-            "all": "Fetching all matches...",
-            "results": "Fetching match results...",
-            "upcoming": "Fetching upcoming matches...",
-        }.get(view_mode, "Fetching matches...")
-
-        with Progress() as progress:
-            task = progress.add_task(
-                f"[bright_magenta] {task_label}",
-                total=len(futures_to_link),
+    async def _run():
+        async with AsyncValorantClient(
+            cache_enabled=client._cache_enabled
+        ) as async_client:
+            return await process_matches_with_progress(
+                async_client, match_links, view_mode
             )
 
-            for future in as_completed(futures_to_link):
-                try:
-                    result = future.result()
-                    if result is not None:
-                        # For results_only mode, skip upcoming matches
-                        if results_only and "UPCOMING" in result:
-                            pass
-                        else:
-                            results.append((futures_to_link[future], result))
-                except Exception as e:
-                    logger.warning(f"Failed to process match: {e}")
-                progress.update(task, advance=1)
-                time.sleep(RATE_LIMIT_DELAY)
-
-        print("")
-    return sorted(results, key=lambda x: match_links.index(x[0]))
+    return asyncio.run(_run())
 
 
 def get_event_for_region(
@@ -194,7 +192,7 @@ def get_event_for_region(
 def run_cli_mode(
     args: argparse.Namespace, formatter: Formatter, discovery: EventDiscovery
 ) -> int:
-    """Run in CLI mode with command line arguments."""
+    """Run in CLI mode with command line arguments, then transition to interactive."""
     cache_enabled = not args.no_cache
     client = ValorantClient(cache_enabled=cache_enabled)
 
@@ -222,6 +220,12 @@ def run_cli_mode(
     view_mode = get_view_mode(args)
     results = process_matches(client, match_links, view_mode)
 
+    # Log the actual number of matches being displayed
+    match_type = {"upcoming": "upcoming", "results": "completed", "all": ""}
+    type_str = f" {match_type[view_mode]}" if match_type[view_mode] else ""
+    logger.info(f"Displaying {len(results)}{type_str} matches")
+    print()
+
     if not results:
         if view_mode == "upcoming":
             print(
@@ -237,7 +241,10 @@ def run_cli_mode(
         for _, result in results:
             print(result)
 
-    return 0
+    # Transition to interactive mode
+    print(f"\n{formatter.muted('─' * 40)}")
+    print(f"{formatter.info('Entering interactive mode...', bold=True)}\n")
+    return run_interactive_mode(formatter, discovery)
 
 
 def run_interactive_mode(formatter: Formatter, discovery: EventDiscovery) -> int:
@@ -336,6 +343,12 @@ def run_interactive_mode(formatter: Formatter, discovery: EventDiscovery) -> int
             view_mode = view_mode_map.get(view_mode_option, "all")
 
             results = process_matches(client, match_links, view_mode)
+
+            # Log the actual number of matches being displayed
+            match_type = {"upcoming": "upcoming", "results": "completed", "all": ""}
+            type_str = f" {match_type[view_mode]}" if match_type[view_mode] else ""
+            logger.info(f"Displaying {len(results)}{type_str} matches")
+            print()
 
             if not results:
                 if view_mode == "upcoming":

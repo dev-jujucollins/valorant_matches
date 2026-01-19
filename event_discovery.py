@@ -7,7 +7,13 @@ from dataclasses import dataclass
 
 import requests
 from bs4 import BeautifulSoup
-from requests.exceptions import RequestException
+from requests.adapters import HTTPAdapter
+from requests.exceptions import (
+    ConnectionError,
+    HTTPError,
+    RequestException,
+    Timeout,
+)
 
 from config import BASE_URL, HEADERS, MAX_RETRIES, REQUEST_TIMEOUT, RETRY_DELAY
 
@@ -29,6 +35,16 @@ REGION_ALIASES: dict[str, list[str]] = {
     "masters": ["masters"],
 }
 
+# Pre-compiled regex patterns for performance
+VCT_SLUG_PATTERN = re.compile(r"vct-(\d{4})-([^-]+)-(.+)")
+CHAMPIONS_SLUG_PATTERN = re.compile(r"valorant-(champions|masters)-(\d{4})")
+MASTERS_CITY_PATTERN = re.compile(r"valorant-masters-([^-]+)-(\d{4})")
+EVENT_ID_PATTERN = re.compile(r"/event/(\d+)/([^/]+)")
+EVENT_LINK_PATTERN = re.compile(r"^/event/\d+/")
+EVENT_NAME_PATTERN = re.compile(
+    r"((?:VCT \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)"
+)
+
 
 @dataclass
 class DiscoveredEvent:
@@ -49,27 +65,56 @@ class EventDiscovery:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
+
+        # Configure connection pooling for better performance
+        adapter = HTTPAdapter(
+            pool_connections=5,
+            pool_maxsize=10,
+            max_retries=0,  # We handle retries ourselves
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
         self._cache: dict[str, tuple[float, list[DiscoveredEvent]]] = {}
 
+    def _is_retryable_error(
+        self, error: Exception, response: requests.Response | None = None
+    ) -> bool:
+        """Determine if an error is transient and worth retrying."""
+        if isinstance(error, (ConnectionError, Timeout)):
+            return True
+        if isinstance(error, HTTPError) and response is not None:
+            return response.status_code >= 500 or response.status_code == 429
+        return False
+
     def _make_request(self, url: str) -> BeautifulSoup | None:
-        """Make an HTTP request with retry logic."""
+        """Make an HTTP request with smart retry logic."""
         for attempt in range(MAX_RETRIES):
+            response = None
             try:
                 response = self.session.get(url, timeout=REQUEST_TIMEOUT)
                 response.raise_for_status()
-                return BeautifulSoup(response.text, "html.parser")
+                return BeautifulSoup(response.text, "lxml")
             except RequestException as e:
-                logger.warning(
-                    f"Request failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}"
-                )
-                if attempt < MAX_RETRIES - 1:
+                is_retryable = self._is_retryable_error(e, response)
+
+                if is_retryable and attempt < MAX_RETRIES - 1:
+                    logger.warning(
+                        f"Transient error (attempt {attempt + 1}/{MAX_RETRIES}): {e}"
+                    )
                     time.sleep(RETRY_DELAY * (2**attempt))
+                elif not is_retryable:
+                    logger.warning(f"Permanent error, not retrying: {e}")
+                    return None
+                else:
+                    logger.error(f"Failed after {MAX_RETRIES} attempts: {e}")
+                    return None
         return None
 
     def _slug_to_name(self, slug: str) -> str | None:
         """Convert event slug to human-readable name."""
         # Pattern: vct-2026-americas-kickoff -> VCT 2026: Americas Kickoff
-        vct_match = re.match(r"vct-(\d{4})-([^-]+)-(.+)", slug)
+        vct_match = VCT_SLUG_PATTERN.match(slug)
         if vct_match:
             year, region, stage = vct_match.groups()
             region = region.capitalize()
@@ -77,13 +122,13 @@ class EventDiscovery:
             return f"VCT {year}: {region} {stage}"
 
         # Pattern: valorant-champions-2026 -> Valorant Champions 2026
-        champ_match = re.match(r"valorant-(champions|masters)-(\d{4})", slug)
+        champ_match = CHAMPIONS_SLUG_PATTERN.match(slug)
         if champ_match:
             event_type, year = champ_match.groups()
             return f"Valorant {event_type.capitalize()} {year}"
 
         # Pattern: valorant-masters-city-2026 -> Valorant Masters City 2026
-        masters_match = re.match(r"valorant-masters-([^-]+)-(\d{4})", slug)
+        masters_match = MASTERS_CITY_PATTERN.match(slug)
         if masters_match:
             city, year = masters_match.groups()
             return f"Valorant Masters {city.capitalize()} {year}"
@@ -109,7 +154,7 @@ class EventDiscovery:
 
     def _extract_event_id(self, href: str) -> tuple[str, str] | None:
         """Extract event ID and slug from href like /event/2682/vct-2026-americas-kickoff."""
-        match = re.match(r"/event/(\d+)/([^/]+)", href)
+        match = EVENT_ID_PATTERN.match(href)
         if match:
             return match.group(1), match.group(2)
         return None
@@ -138,7 +183,7 @@ class EventDiscovery:
             return []
 
         # Find all event cards - they're in anchor tags with /event/ hrefs
-        event_links = soup.find_all("a", href=re.compile(r"^/event/\d+/"))
+        event_links = soup.find_all("a", href=EVENT_LINK_PATTERN)
 
         seen_ids: set[str] = set()
         for link in event_links:
@@ -160,10 +205,7 @@ class EventDiscovery:
                 # Fallback to parsing link text
                 raw_name = link.get_text(strip=True)
                 # Try to extract just the event name (before status/dates/etc)
-                name_match = re.match(
-                    r"((?:VCT \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)",
-                    raw_name,
-                )
+                name_match = EVENT_NAME_PATTERN.match(raw_name)
                 name = name_match.group(1).strip() if name_match else raw_name[:50]
 
             if not name or len(name) < 5:

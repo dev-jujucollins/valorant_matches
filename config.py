@@ -76,7 +76,8 @@ MAX_WORKERS = get_env_int("MAX_WORKERS", 10)
 
 # Cache settings
 CACHE_ENABLED = get_env_bool("CACHE_ENABLED", True)
-CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 300)
+# 1 hour TTL for completed matches (they don't change)
+CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 3600)
 CACHE_DIR = Path(os.getenv("CACHE_DIR", ".cache"))
 
 # Rate limiting settings

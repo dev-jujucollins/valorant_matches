@@ -21,6 +21,7 @@ dependencies = [
     "mdurl==0.1.2",
     "colorlog==6.8.2",
     "python-dotenv==1.0.0",
+    "aiohttp>=3.9.0",
 ]
 
 [build-system]
@@ -33,6 +34,7 @@ only-include = [
     "config.py",
     "formatter.py",
     "valorant_client.py",
+    "async_client.py",
     "cache.py",
     "event_discovery.py",
 ]
@@ -78,7 +80,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["valorant_client", "config", "formatter", "cache"]
+known-first-party = ["valorant_client", "async_client", "config", "formatter", "cache"]
 
 [tool.ruff.format]
 quote-style = "double"

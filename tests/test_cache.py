@@ -108,9 +108,11 @@ class TestMatchCache:
 
         stats = cache.get_stats()
 
-        assert stats["total_entries"] == 2
-        assert stats["valid_entries"] == 2
-        assert stats["expired_entries"] == 0
+        # Updated for two-tier cache stats
+        assert stats["disk_total"] == 2
+        assert stats["disk_valid"] == 2
+        assert stats["disk_expired"] == 0
+        assert stats["memory_entries"] == 2  # Both entries are also in memory
 
     def test_cache_handles_invalid_json(self, cache, temp_cache_dir):
         """Test that cache handles corrupted cache files gracefully."""

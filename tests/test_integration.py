@@ -224,13 +224,17 @@ class TestConcurrentProcessing:
         # Mock process_match to fail on second call
         call_count = [0]
 
-        def mock_process_match(link, upcoming_only=False):
+        async def mock_process_match(link, upcoming_only=False):
             call_count[0] += 1
             if call_count[0] == 2:
                 raise ValueError("Simulated failure")
             return f"Result for {link['href']}"
 
-        with patch.object(client, "process_match", side_effect=mock_process_match):
+        # Patch the AsyncValorantClient's process_match method since process_matches uses async
+        with patch(
+            "async_client.AsyncValorantClient.process_match",
+            side_effect=mock_process_match,
+        ):
             # This should not raise despite the exception
             results = process_matches(client, mock_links, "all")
 
