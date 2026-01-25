@@ -4,7 +4,16 @@ from unittest.mock import Mock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_client import Match, ValorantClient
+from match_extractor import (
+    MAX_BACKOFF_DELAY,
+    Match,
+    extract_date_time,
+    extract_live_status,
+    extract_score,
+    extract_teams,
+    format_eta,
+)
+from valorant_client import ValorantClient
 
 
 @pytest.fixture
@@ -125,93 +134,63 @@ class TestValorantClient:
         assert client.session is not None
         assert client.formatter is not None
 
-    def test_extract_teams(self, client, sample_match_html):
-        """Test team extraction from HTML."""
-        soup = BeautifulSoup(sample_match_html, "html.parser")
-        teams = client._extract_teams(soup)
+    def test_get_event_url_valid(self, client):
+        """Test getting event URL for valid choice."""
+        url = client.get_event_url("1")
+        assert url is not None
+        assert "vlr.gg" in url
 
-        assert len(teams) == 2
-        assert teams[0] == "Sentinels"
-        assert teams[1] == "Cloud9"
+    def test_get_event_url_invalid(self, client):
+        """Test getting event URL for invalid choice."""
+        url = client.get_event_url("99")
+        assert url is None
 
-    def test_extract_teams_fallback(self, client):
-        """Test team extraction with fallback selector."""
-        html = """
+    def test_get_event_url_exit(self, client):
+        """Test getting event URL for exit choice."""
+        url = client.get_event_url("7")
+        assert url is None
+
+    @patch.object(ValorantClient, "_make_request")
+    def test_fetch_event_matches(self, mock_request, client):
+        """Test fetching event matches using slug-based matching."""
+        mock_html = """
         <html>
         <body>
-            <div class="match-header-link-name">Team Alpha</div>
-            <div class="match-header-link-name">Team Beta</div>
+            <a href="/594001/team-a-vs-team-b-vct-2026-test-event-ur1">Match 1</a>
+            <a href="/595002/team-c-vs-team-d-vct-2026-test-event-ur1">Match 2</a>
+            <a href="/other/link">Other Link</a>
+            <a href="/123456/some-other-event-match">Wrong event</a>
         </body>
         </html>
         """
-        soup = BeautifulSoup(html, "html.parser")
-        teams = client._extract_teams(soup)
+        mock_request.return_value = BeautifulSoup(mock_html, "html.parser")
 
-        assert len(teams) == 2
-        assert teams[0] == "Team Alpha"
-        assert teams[1] == "Team Beta"
+        # URL contains slug 'vct-2026-test-event' which matches the first two hrefs
+        matches = client.fetch_event_matches(
+            "https://vlr.gg/event/matches/2682/vct-2026-test-event/"
+        )
 
-    def test_extract_teams_unknown(self, client):
-        """Test team extraction returns unknown when no teams found."""
-        html = "<html><body></body></html>"
-        soup = BeautifulSoup(html, "html.parser")
-        teams = client._extract_teams(soup)
+        assert len(matches) == 2
 
-        assert teams == ["Unknown Team 1", "Unknown Team 2"]
+    @patch.object(ValorantClient, "_make_request")
+    def test_fetch_event_matches_empty(self, mock_request, client):
+        """Test fetching event matches when none found."""
+        mock_request.return_value = BeautifulSoup(
+            "<html><body></body></html>", "html.parser"
+        )
 
-    def test_extract_score(self, client, sample_match_html):
-        """Test score extraction from HTML."""
-        soup = BeautifulSoup(sample_match_html, "html.parser")
-        score = client._extract_score(soup)
+        matches = client.fetch_event_matches("https://vlr.gg/event/123")
 
-        assert score == "2 : 1"
+        assert len(matches) == 0
 
-    def test_extract_score_not_started(self, client, sample_upcoming_match_html):
-        """Test score extraction for upcoming match."""
-        soup = BeautifulSoup(sample_upcoming_match_html, "html.parser")
-        score = client._extract_score(soup)
+    @patch.object(ValorantClient, "_make_request")
+    def test_fetch_event_matches_request_fails(self, mock_request, client):
+        """Test fetching event matches when request fails."""
+        mock_request.return_value = None
 
-        assert score == "Match has not started yet."
+        matches = client.fetch_event_matches("https://vlr.gg/event/123")
 
-    def test_extract_score_countdown(
-        self, client, sample_upcoming_match_with_countdown_html
-    ):
-        """Test score extraction for upcoming match with countdown."""
-        soup = BeautifulSoup(sample_upcoming_match_with_countdown_html, "html.parser")
-        score = client._extract_score(soup)
-
-        assert score == "1h 30m"
-
-    def test_extract_live_status_live(self, client, sample_live_match_html):
-        """Test live status extraction for live match."""
-        soup = BeautifulSoup(sample_live_match_html, "html.parser")
-        is_live = client._extract_live_status(soup)
-
-        assert is_live is True
-
-    def test_extract_live_status_not_live(self, client, sample_match_html):
-        """Test live status extraction for non-live match."""
-        soup = BeautifulSoup(sample_match_html, "html.parser")
-        is_live = client._extract_live_status(soup)
-
-        assert is_live is False
-
-    def test_extract_date_time(self, client, sample_match_html):
-        """Test date/time extraction from HTML."""
-        soup = BeautifulSoup(sample_match_html, "html.parser")
-        date, time = client._extract_date_time(soup)
-
-        assert date == "December 23, 2025"
-        assert time == "3:00 PM EST"
-
-    def test_extract_date_time_unknown(self, client):
-        """Test date/time extraction when not found."""
-        html = "<html><body></body></html>"
-        soup = BeautifulSoup(html, "html.parser")
-        date, time = client._extract_date_time(soup)
-
-        assert date == "Unknown date"
-        assert time == "Unknown time"
+        assert len(matches) == 0
 
     def test_format_match_output_completed(self, client):
         """Test formatting completed match output."""
@@ -290,76 +269,108 @@ class TestValorantClient:
         assert "in 1h 30m" in output
         assert "UPCOMING" not in output
 
-    def test_format_eta_with_countdown(self, client):
-        """Test _format_eta with countdown patterns."""
-        assert client._format_eta("1h 30m") == "in 1h 30m"
-        assert client._format_eta("2d 5h") == "in 2d 5h"
-        assert client._format_eta("0h 42m") == "in 0h 42m"
-        assert client._format_eta("5m 30s") == "in 5m 30s"
 
-    def test_format_eta_fallback(self, client):
-        """Test _format_eta fallback to UPCOMING."""
-        assert client._format_eta("Match has not started yet.") == "UPCOMING"
-        assert client._format_eta("") == "UPCOMING"
-        assert client._format_eta("vs") == "UPCOMING"
+class TestExtractionFunctions:
+    """Tests for match extraction functions from match_extractor module."""
 
-    def test_get_event_url_valid(self, client):
-        """Test getting event URL for valid choice."""
-        url = client.get_event_url("1")
-        assert url is not None
-        assert "vlr.gg" in url
+    def test_extract_teams(self, sample_match_html):
+        """Test team extraction from HTML."""
+        soup = BeautifulSoup(sample_match_html, "html.parser")
+        teams = extract_teams(soup)
 
-    def test_get_event_url_invalid(self, client):
-        """Test getting event URL for invalid choice."""
-        url = client.get_event_url("99")
-        assert url is None
+        assert len(teams) == 2
+        assert teams[0] == "Sentinels"
+        assert teams[1] == "Cloud9"
 
-    def test_get_event_url_exit(self, client):
-        """Test getting event URL for exit choice."""
-        url = client.get_event_url("7")
-        assert url is None
-
-    @patch.object(ValorantClient, "_make_request")
-    def test_fetch_event_matches(self, mock_request, client):
-        """Test fetching event matches using slug-based matching."""
-        mock_html = """
+    def test_extract_teams_fallback(self):
+        """Test team extraction with fallback selector."""
+        html = """
         <html>
         <body>
-            <a href="/594001/team-a-vs-team-b-vct-2026-test-event-ur1">Match 1</a>
-            <a href="/595002/team-c-vs-team-d-vct-2026-test-event-ur1">Match 2</a>
-            <a href="/other/link">Other Link</a>
-            <a href="/123456/some-other-event-match">Wrong event</a>
+            <div class="match-header-link-name">Team Alpha</div>
+            <div class="match-header-link-name">Team Beta</div>
         </body>
         </html>
         """
-        mock_request.return_value = BeautifulSoup(mock_html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
+        teams = extract_teams(soup)
 
-        # URL contains slug 'vct-2026-test-event' which matches the first two hrefs
-        matches = client.fetch_event_matches(
-            "https://vlr.gg/event/matches/2682/vct-2026-test-event/"
-        )
+        assert len(teams) == 2
+        assert teams[0] == "Team Alpha"
+        assert teams[1] == "Team Beta"
 
-        assert len(matches) == 2
+    def test_extract_teams_unknown(self):
+        """Test team extraction returns unknown when no teams found."""
+        html = "<html><body></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+        teams = extract_teams(soup)
 
-    @patch.object(ValorantClient, "_make_request")
-    def test_fetch_event_matches_empty(self, mock_request, client):
-        """Test fetching event matches when none found."""
-        mock_request.return_value = BeautifulSoup(
-            "<html><body></body></html>", "html.parser"
-        )
+        assert teams == ["Unknown Team 1", "Unknown Team 2"]
 
-        matches = client.fetch_event_matches("https://vlr.gg/event/123")
+    def test_extract_score(self, sample_match_html):
+        """Test score extraction from HTML."""
+        soup = BeautifulSoup(sample_match_html, "html.parser")
+        score = extract_score(soup)
 
-        assert len(matches) == 0
+        assert score == "2 : 1"
 
-    @patch.object(ValorantClient, "_make_request")
-    def test_fetch_event_matches_request_fails(self, mock_request, client):
-        """Test fetching event matches when request fails."""
-        mock_request.return_value = None
+    def test_extract_score_not_started(self, sample_upcoming_match_html):
+        """Test score extraction for upcoming match."""
+        soup = BeautifulSoup(sample_upcoming_match_html, "html.parser")
+        score = extract_score(soup)
 
-        matches = client.fetch_event_matches("https://vlr.gg/event/123")
+        assert score == "Match has not started yet."
 
-        assert len(matches) == 0
+    def test_extract_score_countdown(self, sample_upcoming_match_with_countdown_html):
+        """Test score extraction for upcoming match with countdown."""
+        soup = BeautifulSoup(sample_upcoming_match_with_countdown_html, "html.parser")
+        score = extract_score(soup)
+
+        assert score == "1h 30m"
+
+    def test_extract_live_status_live(self, sample_live_match_html):
+        """Test live status extraction for live match."""
+        soup = BeautifulSoup(sample_live_match_html, "html.parser")
+        is_live = extract_live_status(soup)
+
+        assert is_live is True
+
+    def test_extract_live_status_not_live(self, sample_match_html):
+        """Test live status extraction for non-live match."""
+        soup = BeautifulSoup(sample_match_html, "html.parser")
+        is_live = extract_live_status(soup)
+
+        assert is_live is False
+
+    def test_extract_date_time(self, sample_match_html):
+        """Test date/time extraction from HTML."""
+        soup = BeautifulSoup(sample_match_html, "html.parser")
+        date, time_str = extract_date_time(soup)
+
+        assert date == "December 23, 2025"
+        assert time_str == "3:00 PM EST"
+
+    def test_extract_date_time_unknown(self):
+        """Test date/time extraction when not found."""
+        html = "<html><body></body></html>"
+        soup = BeautifulSoup(html, "html.parser")
+        date, time_str = extract_date_time(soup)
+
+        assert date == "Unknown date"
+        assert time_str == "Unknown time"
+
+    def test_format_eta_with_countdown(self):
+        """Test format_eta with countdown patterns."""
+        assert format_eta("1h 30m") == "in 1h 30m"
+        assert format_eta("2d 5h") == "in 2d 5h"
+        assert format_eta("0h 42m") == "in 0h 42m"
+        assert format_eta("5m 30s") == "in 5m 30s"
+
+    def test_format_eta_fallback(self):
+        """Test format_eta fallback to UPCOMING."""
+        assert format_eta("Match has not started yet.") == "UPCOMING"
+        assert format_eta("") == "UPCOMING"
+        assert format_eta("vs") == "UPCOMING"
 
 
 class TestMakeRequest:
@@ -427,8 +438,6 @@ class TestExponentialBackoff:
 
     def test_calculate_backoff_max_limit(self):
         """Test that backoff delay is capped at MAX_BACKOFF_DELAY."""
-        from valorant_client import MAX_BACKOFF_DELAY
-
         with patch("valorant_client.MatchCache"):
             client = ValorantClient()
 

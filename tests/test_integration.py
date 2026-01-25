@@ -6,12 +6,12 @@ import pytest
 from bs4 import BeautifulSoup
 from requests.exceptions import RequestException
 
-from valorant_client import (
+from match_extractor import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     CircuitBreakerOpen,
-    ValorantClient,
 )
+from valorant_client import ValorantClient
 
 
 class TestCircuitBreaker:
