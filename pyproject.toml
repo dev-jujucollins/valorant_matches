@@ -38,6 +38,9 @@ only-include = [
     "cache.py",
     "event_discovery.py",
     "match_extractor.py",
+    "event_manager.py",
+    "cli_mode.py",
+    "interactive.py",
 ]
 
 [dependency-groups]
@@ -81,7 +84,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["valorant_client", "async_client", "config", "formatter", "cache", "match_extractor"]
+known-first-party = ["valorant_client", "async_client", "config", "formatter", "cache", "match_extractor", "event_manager", "cli_mode", "interactive"]
 
 [tool.ruff.format]
 quote-style = "double"
