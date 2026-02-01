@@ -7,8 +7,14 @@ A Python application that fetches and displays match results from the Valorant C
 - Real-time match results from VCT events
 - Support for multiple regions (Americas, EMEA, APAC, China)
 - **View modes**: All matches, Results only, or Upcoming only
+- **Display options**: Compact mode, sorting (date/team), grouping (date/status)
+- **Export**: Save matches to JSON or CSV format
+- **Team filtering**: Filter matches by team name
+- **Interactive mode**: Keyboard shortcuts for quick navigation
+- **User profiles**: Persistent configuration for preferences
 - **Caching**: Match data cached locally with configurable TTL
-- Concurrent match processing for faster results
+- **Auto-discovery**: Automatically discovers current VCT events from vlr.gg
+- Async/concurrent match processing for faster results
 - Beautiful terminal output with Rich formatting
 - **Resilient web scraping** with fallback CSS selectors
 - **Configurable** via environment variables
@@ -72,13 +78,68 @@ pip install -r requirements.txt
 
 ## Usage
 
-Run the application:
+### Interactive Mode
+
+Run without arguments to enter interactive mode:
 
 ```bash
 python main.py
 ```
 
-The application will display a menu of available VCT events. Select a number to view match results for that event.
+The application will display a menu of available VCT events. Use keyboard shortcuts for quick navigation:
+
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `r` | Refresh events |
+| `f` | Filter by team |
+| `s` | Sort matches |
+| `g` | Group matches |
+| `h` | Show help |
+
+### CLI Mode
+
+Fetch matches directly with command-line arguments:
+
+```bash
+# Basic usage - fetch matches for a region
+python main.py --region americas
+python main.py -r emea
+
+# Filter by match status
+python main.py -r americas --upcoming    # Only upcoming matches
+python main.py -r americas --results     # Only completed matches
+
+# Display options
+python main.py -r americas --compact              # Single-line format
+python main.py -r americas --sort date            # Sort by date
+python main.py -r americas --sort team            # Sort by team name
+python main.py -r americas --group-by status      # Group by live/upcoming/completed
+python main.py -r americas --group-by date        # Group by date
+
+# Filter by team
+python main.py -r americas --team sentinels
+
+# Export matches
+python main.py -r americas --export json                    # Export to matches.json
+python main.py -r americas --export csv --output results.csv  # Custom filename
+
+# Other options
+python main.py --clear-cache      # Clear cached data
+python main.py --no-cache         # Disable caching for this run
+python main.py --refresh-events   # Force refresh event discovery
+```
+
+### Region Aliases
+
+| Alias | Region |
+|-------|--------|
+| `americas`, `am` | Americas |
+| `emea`, `eu` | EMEA |
+| `apac`, `pacific` | Pacific |
+| `china`, `cn` | China |
+| `champions` | Valorant Champions |
+| `masters` | Valorant Masters |
 
 ## Configuration
 
@@ -104,14 +165,26 @@ Available options:
 
 ```
 valorant_matches/
-├── main.py              # Application entry point
-├── valorant_client.py   # Core match fetching and processing
+├── main.py              # Application entry point and CLI argument parsing
+├── valorant_client.py   # Synchronous match fetching and processing
+├── async_client.py      # Async match fetching with rate limiting
+├── event_discovery.py   # Auto-discovers VCT events from vlr.gg
+├── event_manager.py     # Event selection and region mapping
+├── cli_mode.py          # CLI mode logic and display options
+├── interactive.py       # Interactive mode with keyboard shortcuts
+├── match_extractor.py   # HTML parsing and data extraction
+├── exporters.py         # JSON/CSV export functionality
+├── config_profile.py    # User configuration profile management
 ├── config.py            # Configuration and constants
 ├── formatter.py         # Rich-based terminal formatting
 ├── cache.py             # Match data caching with TTL
 ├── tests/               # Test suite
+│   ├── test_async_client.py
 │   ├── test_cache.py
+│   ├── test_cli_mode.py
 │   ├── test_config.py
+│   ├── test_config_profile.py
+│   ├── test_exporters.py
 │   ├── test_formatter.py
 │   └── test_valorant_client.py
 ├── pyproject.toml       # Project metadata and dependencies
