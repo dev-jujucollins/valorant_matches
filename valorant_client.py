@@ -7,7 +7,7 @@ import re
 # Thread-safe rate limiter
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from urllib.parse import urljoin
 
 import requests
@@ -29,9 +29,19 @@ from config import (
     MAX_RETRIES,
     RATE_LIMIT_DELAY,
     REQUEST_TIMEOUT,
-    RETRY_DELAY,
 )
 from formatter import Formatter
+from match_extractor import (
+    EVENT_SLUG_PATTERN,
+    MATCH_URL_PATTERN,
+    CircuitBreakerMixin,
+    CircuitBreakerOpen,
+    Match,
+    extract_date_time,
+    extract_match_data,
+    format_eta,
+    is_upcoming_match,
+)
 
 _rate_limit_lock = threading.Lock()
 _last_request_time = 0.0
@@ -52,41 +62,9 @@ def _apply_rate_limit() -> None:
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
-# Pre-compiled regex patterns for performance
-MATCH_URL_PATTERN = re.compile(r"^/\d+/")
-EVENT_SLUG_PATTERN = re.compile(r"/event/matches/\d+/([^/]+)")
-COUNTDOWN_PATTERN = re.compile(r"^\d+[dhm]\s")
 
-# Maximum backoff delay in seconds
-MAX_BACKOFF_DELAY = 30
-
-# Circuit breaker settings
-CIRCUIT_BREAKER_THRESHOLD = 5  # Number of consecutive failures to trip
-CIRCUIT_BREAKER_RESET_TIME = 60  # Seconds before attempting to reset
-
-
-@dataclass
-class Match:
-    # Represents a Valorant match
-
-    date: str
-    time: str
-    team1: str
-    team2: str
-    score: str
-    is_live: bool
-    url: str
-    is_upcoming: bool = False
-
-
-class CircuitBreakerOpen(Exception):
-    """Raised when the circuit breaker is open and requests are blocked."""
-
-    pass
-
-
-class ValorantClient:
-    # Client for fetching and processing Valorant match data
+class ValorantClient(CircuitBreakerMixin):
+    """Client for fetching and processing Valorant match data."""
 
     def __init__(self, cache_enabled: bool = True):
         self.session = requests.Session()
@@ -104,9 +82,8 @@ class ValorantClient:
         self.formatter = Formatter()
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
-        # Circuit breaker state
-        self._failure_count = 0
-        self._circuit_open_time: float | None = None
+        # Initialize circuit breaker
+        self._init_circuit_breaker()
         # Slug pattern cache for performance
         self._slug_pattern_cache: dict[str, re.Pattern] = {}
 
@@ -116,41 +93,6 @@ class ValorantClient:
             escaped_slug = re.escape(slug.lower())
             self._slug_pattern_cache[slug] = re.compile(rf"(^|-)({escaped_slug})(-|$)")
         return self._slug_pattern_cache[slug]
-
-    def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter."""
-        delay = RETRY_DELAY * (2**attempt)
-        # Add some jitter (0-25% of delay)
-        jitter = delay * 0.25 * (time.time() % 1)
-        return min(delay + jitter, MAX_BACKOFF_DELAY)
-
-    def _check_circuit_breaker(self) -> None:
-        """Check if circuit breaker allows requests. Raises CircuitBreakerOpen if not."""
-        if self._circuit_open_time is not None:
-            elapsed = time.time() - self._circuit_open_time
-            if elapsed < CIRCUIT_BREAKER_RESET_TIME:
-                raise CircuitBreakerOpen(
-                    f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
-                )
-            # Try to reset the circuit breaker
-            logger.info("Circuit breaker attempting reset...")
-            self._circuit_open_time = None
-            self._failure_count = 0
-
-    def _record_success(self) -> None:
-        """Record a successful request, resetting failure count."""
-        self._failure_count = 0
-        self._circuit_open_time = None
-
-    def _record_failure(self) -> None:
-        """Record a failed request, potentially tripping the circuit breaker."""
-        self._failure_count += 1
-        if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-            self._circuit_open_time = time.time()
-            logger.error(
-                f"Circuit breaker tripped after {self._failure_count} consecutive failures. "
-                f"Blocking requests for {CIRCUIT_BREAKER_RESET_TIME}s"
-            )
 
     def _is_retryable_error(
         self, error: Exception, response: requests.Response | None = None
@@ -172,7 +114,7 @@ class ValorantClient:
     def _make_request(
         self, url: str, retries: int = MAX_RETRIES
     ) -> BeautifulSoup | None:
-        # Make an HTTP request with exponential backoff retry logic and circuit breaker
+        """Make an HTTP request with exponential backoff retry logic and circuit breaker."""
         try:
             self._check_circuit_breaker()
         except CircuitBreakerOpen as e:
@@ -214,7 +156,7 @@ class ValorantClient:
         return None
 
     def get_event_url(self, choice: str) -> str | None:
-        # Get the URL for the selected event
+        """Get the URL for the selected event."""
         if choice in EVENTS:
             return EVENTS[choice].url
         exit_choice = str(len(EVENTS) + 1)
@@ -264,7 +206,7 @@ class ValorantClient:
         return match_links
 
     def process_match(self, link: dict, upcoming_only: bool = False) -> str | None:
-        # Process a single match and return formatted output
+        """Process a single match and return formatted output."""
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
@@ -284,17 +226,14 @@ class ValorantClient:
             if not soup:
                 return None
 
-            teams, score, is_live = self._extract_match_data(soup)
+            teams, score, is_live = extract_match_data(soup)
             if "TBD" in teams:
                 return None
 
-            match_date, match_time = self._extract_date_time(soup)
+            match_date, match_time = extract_date_time(soup)
 
             # Determine if this is an upcoming match
-            # Check for "match has not started" or countdown timers like "19h 37m", "1d 5h"
-            is_upcoming = score.lower().startswith("match has not started") or bool(
-                COUNTDOWN_PATTERN.match(score)
-            )
+            is_upcoming = is_upcoming_match(score)
 
             # If filtering for upcoming only, skip completed matches
             if upcoming_only and not is_upcoming and not is_live:
@@ -338,113 +277,8 @@ class ValorantClient:
             )
             return None
 
-    def _extract_match_data(
-        self, soup: BeautifulSoup
-    ) -> tuple[list[str], str, bool | None]:
-        """Extract team names, score, and live status from match page."""
-        teams = self._extract_teams(soup)
-        score = self._extract_score(soup)
-        is_live = self._extract_live_status(soup)
-        return teams, score, is_live
-
-    def _extract_teams(self, soup: BeautifulSoup) -> list[str]:
-        """Extract team names with fallback selectors ."""
-        team_selectors = [
-            ("div", "wf-title-med"),
-            ("div", "match-header-link-name"),
-            ("a", "match-header-link"),
-        ]
-
-        for tag, class_name in team_selectors:
-            elements = soup.find_all(tag, class_=class_name)
-            if elements and len(elements) >= 2:
-                teams = [el.text.strip() for el in elements][:2]
-                teams = [team.split("(")[0].strip() for team in teams]
-                if all(teams):
-                    return teams
-
-        logger.warning("Could not extract team names with any selector")
-        return ["Unknown Team 1", "Unknown Team 2"]
-
-    def _extract_score(self, soup: BeautifulSoup) -> str:
-        """Extract match score with fallback selectors ."""
-        # First, check for upcoming match countdown (e.g., "0h 38m", "1d 5h")
-        upcoming_elem = soup.find("span", class_="match-header-vs-note mod-upcoming")
-        if upcoming_elem:
-            countdown = upcoming_elem.text.strip()
-            countdown = " ".join(countdown.split())
-            if countdown:
-                return countdown
-
-        # Then check for completed/live match scores
-        score_selectors = [
-            ("div", "js-spoiler"),
-            ("div", "match-header-vs-score"),
-            ("span", "match-header-vs-score-winner"),
-        ]
-
-        for tag, class_name in score_selectors:
-            score_elem = soup.find(tag, class_=class_name)
-            if score_elem:
-                score = score_elem.text.strip()
-                score = " ".join(score.split())
-                if score:
-                    return score
-
-        return "Match has not started yet."
-
-    def _extract_live_status(self, soup: BeautifulSoup) -> bool:
-        """Extract live status with fallback selectors ."""
-        live_selectors = [
-            ("span", "match-header-vs-note mod-live"),
-            ("span", "mod-live"),
-            ("div", "match-header-vs-note mod-live"),
-        ]
-
-        for tag, class_name in live_selectors:
-            if soup.find(tag, class_=class_name):
-                return True
-
-        header = soup.find("div", class_="match-header-vs")
-        return bool(header and "live" in header.text.lower())
-
-    def _extract_date_time(self, soup: BeautifulSoup) -> tuple[str, str]:
-        """Extract match date and time with fallback selectors."""
-        # Use specific selectors in order of preference (avoid broad container matches)
-        date_selectors = [
-            ("div", "moment-tz-convert"),
-            ("span", "moment-tz-convert"),
-        ]
-
-        for tag, class_name in date_selectors:
-            date_elem = soup.find(tag, class_=class_name)
-            if date_elem:
-                match_date = date_elem.text.strip()
-                time_elem = date_elem.find_next("div", class_="moment-tz-convert")
-                if not time_elem:
-                    time_elem = date_elem.find_next("div")
-                match_time = time_elem.text.strip() if time_elem else "Unknown time"
-                if match_date and match_date != "Unknown date":
-                    return match_date, match_time
-
-        logger.debug("Could not extract date/time with any selector")
-        return "Unknown date", "Unknown time"
-
-    def _format_eta(self, score: str) -> str:
-        """Format ETA for upcoming matches from score field.
-
-        The score field for upcoming matches contains countdown text like
-        "0h 42m", "1d 5h", or "Match has not started yet."
-        This extracts and formats the time until the match starts.
-        """
-        # Check if score contains a countdown pattern (e.g., "0h 42m", "1d 5h")
-        if COUNTDOWN_PATTERN.match(score):
-            return f"in {score}"
-        # Fallback for matches without countdown info
-        return "UPCOMING"
-
     def _format_match_output(self, match: Match) -> str:
-        # Format match data for display
+        """Format match data for display."""
         separator = "─" * 100
         date_time = self.formatter.date_time(f"{match.date}  {match.time}")
         teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
@@ -457,7 +291,7 @@ class ValorantClient:
             return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
         elif match.is_upcoming:
             # Display time until match starts if available (e.g., "1h 30m", "2d 5h")
-            eta = self._format_eta(match.score)
+            eta = format_eta(match.score)
             status = self.formatter.warning(eta)
             return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
         else:
@@ -465,7 +299,7 @@ class ValorantClient:
             return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.formatter.muted(separator)}\n"
 
     def display_menu(self) -> str:
-        # Display the event selection menu
+        """Display the event selection menu."""
         print(f"\n{self.formatter.info(' Available Regions:', bold=True)}")
         for key, event in EVENTS.items():
             print(
@@ -477,7 +311,7 @@ class ValorantClient:
         return input(f"{self.formatter.info('Select an event:', bold=True)} ").strip()
 
     def display_view_mode_menu(self) -> str:
-        # Display the view mode selection menu
+        """Display the view mode selection menu."""
         print(f"\n{self.formatter.info(' View Mode:', bold=True)}")
         print(
             f"{self.formatter.primary('1.', bold=True)} {self.formatter.highlight('All Matches')}"

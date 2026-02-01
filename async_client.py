@@ -17,25 +17,21 @@ from config import (
     MAX_RETRIES,
     RATE_LIMIT_DELAY,
     REQUEST_TIMEOUT,
-    RETRY_DELAY,
 )
 from formatter import Formatter
-from valorant_client import (
-    COUNTDOWN_PATTERN,
+from match_extractor import (
     EVENT_SLUG_PATTERN,
     MATCH_URL_PATTERN,
+    CircuitBreakerMixin,
     CircuitBreakerOpen,
     Match,
+    extract_date_time,
+    extract_match_data,
+    format_eta,
+    is_upcoming_match,
 )
 
 logger = logging.getLogger("valorant_matches")
-
-# Maximum backoff delay in seconds
-MAX_BACKOFF_DELAY = 30
-
-# Circuit breaker settings
-CIRCUIT_BREAKER_THRESHOLD = 5
-CIRCUIT_BREAKER_RESET_TIME = 60
 
 
 class AsyncRateLimiter:
@@ -56,15 +52,14 @@ class AsyncRateLimiter:
             self._last_request = time.time()
 
 
-class AsyncValorantClient:
+class AsyncValorantClient(CircuitBreakerMixin):
     """Async client for fetching and processing Valorant match data."""
 
     def __init__(self, cache_enabled: bool = True):
         self.formatter = Formatter()
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
-        self._failure_count = 0
-        self._circuit_open_time: float | None = None
+        self._init_circuit_breaker()
         self._slug_pattern_cache: dict[str, re.Pattern] = {}
         self._rate_limiter = AsyncRateLimiter()
         self._session: aiohttp.ClientSession | None = None
@@ -94,38 +89,6 @@ class AsyncValorantClient:
             escaped_slug = re.escape(slug.lower())
             self._slug_pattern_cache[slug] = re.compile(rf"(^|-)({escaped_slug})(-|$)")
         return self._slug_pattern_cache[slug]
-
-    def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter."""
-        delay = RETRY_DELAY * (2**attempt)
-        jitter = delay * 0.25 * (time.time() % 1)
-        return min(delay + jitter, MAX_BACKOFF_DELAY)
-
-    def _check_circuit_breaker(self) -> None:
-        """Check if circuit breaker allows requests."""
-        if self._circuit_open_time is not None:
-            elapsed = time.time() - self._circuit_open_time
-            if elapsed < CIRCUIT_BREAKER_RESET_TIME:
-                raise CircuitBreakerOpen(
-                    f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
-                )
-            logger.info("Circuit breaker attempting reset...")
-            self._circuit_open_time = None
-            self._failure_count = 0
-
-    def _record_success(self) -> None:
-        """Record a successful request."""
-        self._failure_count = 0
-        self._circuit_open_time = None
-
-    def _record_failure(self) -> None:
-        """Record a failed request."""
-        self._failure_count += 1
-        if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-            self._circuit_open_time = time.time()
-            logger.error(
-                f"Circuit breaker tripped after {self._failure_count} failures"
-            )
 
     def _is_retryable_status(self, status: int) -> bool:
         """Check if HTTP status code is retryable."""
@@ -165,7 +128,9 @@ class AsyncValorantClient:
 
                     text = await response.text()
                     self._record_success()
-                    return BeautifulSoup(text, "lxml")
+                    # Run BeautifulSoup parsing in thread pool to avoid blocking
+                    soup = await asyncio.to_thread(BeautifulSoup, text, "lxml")
+                    return soup
 
             except TimeoutError:
                 if attempt < retries - 1:
@@ -217,8 +182,12 @@ class AsyncValorantClient:
 
     async def process_match(
         self, link: dict, upcoming_only: bool = False
-    ) -> str | None:
-        """Process a single match asynchronously."""
+    ) -> Match | str | None:
+        """Process a single match asynchronously.
+
+        Returns:
+            Match object if successful, "TBD" if teams not announced, None on failure.
+        """
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
@@ -228,21 +197,19 @@ class AsyncValorantClient:
                 if cached_data:
                     cached_match = Match(**cached_data)
                     if not cached_match.is_live and not cached_match.is_upcoming:
-                        return self._format_match_output(cached_match)
+                        return cached_match
 
             soup = await self._make_request(match_url)
             if not soup:
                 return None
 
-            teams, score, is_live = self._extract_match_data(soup)
+            teams, score, is_live = extract_match_data(soup)
             if "TBD" in teams:
-                return None
+                return "TBD"  # Sentinel value for TBD matches
 
-            match_date, match_time = self._extract_date_time(soup)
+            match_date, match_time = extract_date_time(soup)
 
-            is_upcoming = score.lower().startswith("match has not started") or bool(
-                COUNTDOWN_PATTERN.match(score)
-            )
+            is_upcoming = is_upcoming_match(score)
 
             if upcoming_only and not is_upcoming and not is_live:
                 return None
@@ -263,114 +230,11 @@ class AsyncValorantClient:
             elif self._cache_enabled:
                 self.cache.invalidate(match_url)
 
-            return self._format_match_output(match)
+            return match
 
         except Exception as e:
             logger.error(f"Error processing match {match_url}: {e}")
             return None
-
-    def _extract_match_data(
-        self, soup: BeautifulSoup
-    ) -> tuple[list[str], str, bool | None]:
-        """Extract team names, score, and live status from match page."""
-        teams = self._extract_teams(soup)
-        score = self._extract_score(soup)
-        is_live = self._extract_live_status(soup)
-        return teams, score, is_live
-
-    def _extract_teams(self, soup: BeautifulSoup) -> list[str]:
-        """Extract team names with fallback selectors."""
-        team_selectors = [
-            ("div", "wf-title-med"),
-            ("div", "match-header-link-name"),
-            ("a", "match-header-link"),
-        ]
-
-        for tag, class_name in team_selectors:
-            elements = soup.find_all(tag, class_=class_name)
-            if elements and len(elements) >= 2:
-                teams = [el.text.strip() for el in elements][:2]
-                teams = [team.split("(")[0].strip() for team in teams]
-                if all(teams):
-                    return teams
-
-        return ["Unknown Team 1", "Unknown Team 2"]
-
-    def _extract_score(self, soup: BeautifulSoup) -> str:
-        """Extract match score with fallback selectors."""
-        # First, check for upcoming match countdown (e.g., "0h 38m", "1d 5h")
-        upcoming_elem = soup.find("span", class_="match-header-vs-note mod-upcoming")
-        if upcoming_elem:
-            countdown = upcoming_elem.text.strip()
-            countdown = " ".join(countdown.split())
-            if countdown:
-                return countdown
-
-        # Then check for completed/live match scores
-        score_selectors = [
-            ("div", "js-spoiler"),
-            ("div", "match-header-vs-score"),
-            ("span", "match-header-vs-score-winner"),
-        ]
-
-        for tag, class_name in score_selectors:
-            score_elem = soup.find(tag, class_=class_name)
-            if score_elem:
-                score = score_elem.text.strip()
-                score = " ".join(score.split())
-                if score:
-                    return score
-
-        return "Match has not started yet."
-
-    def _extract_live_status(self, soup: BeautifulSoup) -> bool:
-        """Extract live status with fallback selectors."""
-        live_selectors = [
-            ("span", "match-header-vs-note mod-live"),
-            ("span", "mod-live"),
-            ("div", "match-header-vs-note mod-live"),
-        ]
-
-        for tag, class_name in live_selectors:
-            if soup.find(tag, class_=class_name):
-                return True
-
-        header = soup.find("div", class_="match-header-vs")
-        return bool(header and "live" in header.text.lower())
-
-    def _extract_date_time(self, soup: BeautifulSoup) -> tuple[str, str]:
-        """Extract match date and time with fallback selectors."""
-        # Use specific selectors in order of preference (avoid broad container matches)
-        date_selectors = [
-            ("div", "moment-tz-convert"),
-            ("span", "moment-tz-convert"),
-        ]
-
-        for tag, class_name in date_selectors:
-            date_elem = soup.find(tag, class_=class_name)
-            if date_elem:
-                match_date = date_elem.text.strip()
-                time_elem = date_elem.find_next("div", class_="moment-tz-convert")
-                if not time_elem:
-                    time_elem = date_elem.find_next("div")
-                match_time = time_elem.text.strip() if time_elem else "Unknown time"
-                if match_date and match_date != "Unknown date":
-                    return match_date, match_time
-
-        return "Unknown date", "Unknown time"
-
-    def _format_eta(self, score: str) -> str:
-        """Format ETA for upcoming matches from score field.
-
-        The score field for upcoming matches contains countdown text like
-        "0h 42m", "1d 5h", or "Match has not started yet."
-        This extracts and formats the time until the match starts.
-        """
-        # Check if score contains a countdown pattern (e.g., "0h 42m", "1d 5h")
-        if COUNTDOWN_PATTERN.match(score):
-            return f"in {score}"
-        # Fallback for matches without countdown info
-        return "UPCOMING"
 
     def _format_match_output(self, match: Match) -> str:
         """Format match data for display."""
@@ -384,8 +248,7 @@ class AsyncValorantClient:
             score = self.formatter.score(match.score)
             return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
         elif match.is_upcoming:
-            # Display time until match starts if available (e.g., "1h 30m", "2d 5h")
-            eta = self._format_eta(match.score)
+            eta = format_eta(match.score)
             status = self.formatter.warning(eta)
             return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
         else:
@@ -398,9 +261,14 @@ async def process_matches_async(
     match_links: list[dict],
     view_mode: str = "all",
     progress_callback=None,
-) -> list[tuple]:
-    """Process matches concurrently using asyncio."""
-    results = []
+) -> tuple[list[tuple[dict, Match]], int]:
+    """Process matches concurrently using asyncio.
+
+    Returns:
+        Tuple of (results, tbd_count) where results is list of (link_dict, Match) tuples.
+    """
+    results: list[tuple[dict, Match]] = []
+    tbd_count = 0
     upcoming_only = view_mode == "upcoming"
     results_only = view_mode == "results"
 
@@ -419,12 +287,15 @@ async def process_matches_async(
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
             continue
-        # item is now guaranteed to be tuple[dict, str | None]
-        link, result = item
-        if result is not None:
-            if results_only and "UPCOMING" in result:
+        # item is now guaranteed to be tuple[dict, Match | str | None]
+        link, match = item
+        if match == "TBD":
+            tbd_count += 1
+        elif isinstance(match, Match):
+            if results_only and match.is_upcoming:
                 continue
-            results.append((link, result))
+            results.append((link, match))
 
     # Sort by original order
-    return sorted(results, key=lambda x: match_links.index(x[0]))
+    sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
+    return (sorted_results, tbd_count)

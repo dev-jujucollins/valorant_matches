@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import requests
 from bs4 import BeautifulSoup
+from cachetools import TTLCache
 from requests.adapters import HTTPAdapter
 from requests.exceptions import (
     ConnectionError,
@@ -75,7 +76,7 @@ class EventDiscovery:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
 
-        self._cache: dict[str, tuple[float, list[DiscoveredEvent]]] = {}
+        self._cache: TTLCache = TTLCache(maxsize=10, ttl=EVENT_CACHE_TTL)
 
     def _is_retryable_error(
         self, error: Exception, response: requests.Response | None = None
@@ -163,12 +164,10 @@ class EventDiscovery:
         """Discover current VCT events from vlr.gg."""
         cache_key = "vct_events"
 
-        # Check cache
+        # Check cache (TTLCache auto-expires entries)
         if not force_refresh and cache_key in self._cache:
-            timestamp, events = self._cache[cache_key]
-            if time.time() - timestamp < EVENT_CACHE_TTL:
-                logger.debug("Using cached event list")
-                return events
+            logger.debug("Using cached event list")
+            return self._cache[cache_key]
 
         logger.info("Discovering VCT events from vlr.gg")
         events = []
@@ -179,7 +178,7 @@ class EventDiscovery:
         if not soup:
             logger.warning("Failed to fetch events page, using cache if available")
             if cache_key in self._cache:
-                return self._cache[cache_key][1]
+                return self._cache[cache_key]
             return []
 
         # Find all event cards - they're in anchor tags with /event/ hrefs
@@ -246,8 +245,8 @@ class EventDiscovery:
         # Sort by event_id (roughly chronological)
         events.sort(key=lambda e: int(e.event_id))
 
-        # Cache results
-        self._cache[cache_key] = (time.time(), events)
+        # Cache results (TTLCache handles expiration automatically)
+        self._cache[cache_key] = events
         logger.info(f"Discovered {len(events)} VCT events")
 
         return events
