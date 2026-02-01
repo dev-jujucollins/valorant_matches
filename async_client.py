@@ -182,8 +182,12 @@ class AsyncValorantClient(CircuitBreakerMixin):
 
     async def process_match(
         self, link: dict, upcoming_only: bool = False
-    ) -> str | None:
-        """Process a single match asynchronously."""
+    ) -> Match | str | None:
+        """Process a single match asynchronously.
+
+        Returns:
+            Match object if successful, "TBD" if teams not announced, None on failure.
+        """
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
@@ -193,7 +197,7 @@ class AsyncValorantClient(CircuitBreakerMixin):
                 if cached_data:
                     cached_match = Match(**cached_data)
                     if not cached_match.is_live and not cached_match.is_upcoming:
-                        return self._format_match_output(cached_match)
+                        return cached_match
 
             soup = await self._make_request(match_url)
             if not soup:
@@ -201,7 +205,7 @@ class AsyncValorantClient(CircuitBreakerMixin):
 
             teams, score, is_live = extract_match_data(soup)
             if "TBD" in teams:
-                return None
+                return "TBD"  # Sentinel value for TBD matches
 
             match_date, match_time = extract_date_time(soup)
 
@@ -226,7 +230,7 @@ class AsyncValorantClient(CircuitBreakerMixin):
             elif self._cache_enabled:
                 self.cache.invalidate(match_url)
 
-            return self._format_match_output(match)
+            return match
 
         except Exception as e:
             logger.error(f"Error processing match {match_url}: {e}")
@@ -257,9 +261,14 @@ async def process_matches_async(
     match_links: list[dict],
     view_mode: str = "all",
     progress_callback=None,
-) -> list[tuple]:
-    """Process matches concurrently using asyncio."""
-    results = []
+) -> tuple[list[tuple[dict, Match]], int]:
+    """Process matches concurrently using asyncio.
+
+    Returns:
+        Tuple of (results, tbd_count) where results is list of (link_dict, Match) tuples.
+    """
+    results: list[tuple[dict, Match]] = []
+    tbd_count = 0
     upcoming_only = view_mode == "upcoming"
     results_only = view_mode == "results"
 
@@ -278,12 +287,15 @@ async def process_matches_async(
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
             continue
-        # item is now guaranteed to be tuple[dict, str | None]
-        link, result = item
-        if result is not None:
-            if results_only and "UPCOMING" in result:
+        # item is now guaranteed to be tuple[dict, Match | str | None]
+        link, match = item
+        if match == "TBD":
+            tbd_count += 1
+        elif isinstance(match, Match):
+            if results_only and match.is_upcoming:
                 continue
-            results.append((link, result))
+            results.append((link, match))
 
     # Sort by original order
-    return sorted(results, key=lambda x: match_links.index(x[0]))
+    sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
+    return (sorted_results, tbd_count)

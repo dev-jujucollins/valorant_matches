@@ -87,6 +87,37 @@ Available regions:
         action="store_true",
         help="Force refresh event discovery from vlr.gg",
     )
+    parser.add_argument(
+        "--compact",
+        action="store_true",
+        help="Display matches in compact single-line format",
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=["date", "status"],
+        help="Group matches by date or status",
+    )
+    parser.add_argument(
+        "--sort",
+        choices=["date", "team"],
+        help="Sort matches by date or team name",
+    )
+    parser.add_argument(
+        "--export",
+        choices=["json", "csv"],
+        help="Export matches to JSON or CSV format",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        type=str,
+        help="Output file path for export (default: matches.{format})",
+    )
+    parser.add_argument(
+        "--team",
+        type=str,
+        help="Filter matches by team name (case-insensitive)",
+    )
     return parser.parse_args()
 
 
@@ -94,8 +125,12 @@ async def process_matches_with_progress(
     client: AsyncValorantClient,
     match_links: list[dict],
     view_mode: str = "all",
-) -> list[tuple]:
-    """Process matches asynchronously with progress display."""
+) -> tuple[list[tuple], int]:
+    """Process matches asynchronously with progress display.
+
+    Returns:
+        Tuple of (results, tbd_count).
+    """
     task_label = {
         "all": "Fetching all matches...",
         "results": "Fetching match results...",
@@ -111,20 +146,24 @@ async def process_matches_with_progress(
         def update_progress():
             progress.update(task, advance=1)
 
-        results = await process_matches_async(
+        results, tbd_count = await process_matches_async(
             client, match_links, view_mode, progress_callback=update_progress
         )
 
     print("")
-    return results
+    return results, tbd_count
 
 
 def process_matches(
     client: ValorantClient,
     match_links: list[dict],
     view_mode: str = "all",
-) -> list[tuple]:
-    """Process matches using async client (sync wrapper for backward compatibility)."""
+) -> tuple[list[tuple], int]:
+    """Process matches using async client (sync wrapper for backward compatibility).
+
+    Returns:
+        Tuple of (results, tbd_count).
+    """
 
     async def _run():
         async with AsyncValorantClient(
