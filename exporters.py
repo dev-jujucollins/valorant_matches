@@ -79,25 +79,25 @@ def export_csv(results: list[tuple[dict, Match]], output_path: str | Path) -> in
 
 def export_matches(
     results: list[tuple[dict, Match]],
-    format: str,
+    export_format: str,
     output_path: str | Path | None = None,
 ) -> int:
     """Export match results to specified format.
 
     Args:
         results: List of (link, Match) tuples
-        format: Export format ('json' or 'csv')
+        export_format: Export format ('json' or 'csv')
         output_path: Optional path to output file. If not provided, uses default.
 
     Returns:
         Number of matches exported
     """
     if output_path is None:
-        output_path = f"matches.{format}"
+        output_path = f"matches.{export_format}"
 
-    if format == "json":
+    if export_format == "json":
         return export_json(results, output_path)
-    elif format == "csv":
+    elif export_format == "csv":
         return export_csv(results, output_path)
     else:
-        raise ValueError(f"Unsupported export format: {format}")
+        raise ValueError(f"Unsupported export format: {export_format}")

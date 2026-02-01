@@ -4,6 +4,7 @@ import argparse
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from event_discovery import EventDiscovery
 from event_manager import get_event_for_region
@@ -95,6 +96,30 @@ def get_match_status(match: Match) -> str:
     return "completed"
 
 
+def _parse_date(date_str: str) -> datetime:
+    """Parse a date string to datetime for sorting.
+
+    Handles formats like "December 23, 2025", "Dec 23, 2025", and "Jan 10".
+    Returns datetime.max for unparseable dates so they sort last.
+    """
+    formats = [
+        "%B %d, %Y",  # December 23, 2025
+        "%b %d, %Y",  # Dec 23, 2025
+        "%B %d",  # December 23 (no year)
+        "%b %d",  # Dec 23 (no year)
+    ]
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(date_str, fmt)
+            # For formats without year, use current year
+            if "%Y" not in fmt:
+                parsed = parsed.replace(year=datetime.now().year)
+            return parsed
+        except ValueError:
+            continue
+    return datetime.max
+
+
 def sort_matches(
     results: list[tuple[dict, Match]], sort_by: str | None
 ) -> list[tuple[dict, Match]]:
@@ -103,7 +128,7 @@ def sort_matches(
         return results
 
     if sort_by == "date":
-        return sorted(results, key=lambda x: x[1].date)
+        return sorted(results, key=lambda x: _parse_date(x[1].date))
     elif sort_by == "team":
         return sorted(results, key=lambda x: x[1].team1.lower())
     return results

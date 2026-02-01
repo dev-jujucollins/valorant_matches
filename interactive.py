@@ -20,24 +20,20 @@ logger = logging.getLogger("valorant_matches")
 
 # Keyboard shortcuts
 SHORTCUTS = {
-    "q": "quit",
-    "r": "refresh",
-    "f": "filter",
-    "s": "sort",
-    "g": "group",
-    "h": "help",
+    "q": "Quit",
+    "r": "Refresh events",
+    "f": "Filter by team",
+    "s": "Sort matches (date/team)",
+    "g": "Group matches (date/status)",
+    "h": "Show this help",
 }
 
 
 def print_shortcuts(formatter: Formatter) -> None:
     """Display keyboard shortcuts help."""
     print(f"\n{formatter.info('Keyboard Shortcuts:', bold=True)}")
-    print(f"  {formatter.primary('q')} - Quit")
-    print(f"  {formatter.primary('r')} - Refresh events")
-    print(f"  {formatter.primary('f')} - Filter by team")
-    print(f"  {formatter.primary('s')} - Sort matches (date/team)")
-    print(f"  {formatter.primary('g')} - Group matches (date/status)")
-    print(f"  {formatter.primary('h')} - Show this help")
+    for key, description in SHORTCUTS.items():
+        print(f"  {formatter.primary(key)} - {description}")
     print()
 
 
