@@ -10,7 +10,7 @@ from event_discovery import EventDiscovery
 from event_manager import get_event_for_region
 from exporters import export_matches
 from formatter import Formatter
-from match_extractor import Match, format_eta
+from match_extractor import Match
 from valorant_client import ValorantClient
 
 logger = logging.getLogger("valorant_matches")
@@ -182,22 +182,7 @@ def filter_matches_by_team(
 
 def format_match_full(formatter: Formatter, match: Match) -> str:
     """Format match data for full display."""
-    separator = "─" * 100
-    date_time = formatter.date_time(f"{match.date}  {match.time}")
-    teams = formatter.team_name(f"{match.team1} vs {match.team2}")
-    stats_link = formatter.stats_link(f"Stats: {match.url}")
-
-    if match.is_live:
-        status = formatter.live_status("LIVE")
-        score = formatter.score(match.score)
-        return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{formatter.muted(separator)}\n"
-    elif match.is_upcoming:
-        eta = format_eta(match.score)
-        status = formatter.warning(eta)
-        return f"{date_time} | {teams} | {status}\n{stats_link}\n{formatter.muted(separator)}\n"
-    else:
-        score = formatter.score(match.score)
-        return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{formatter.muted(separator)}\n"
+    return formatter.format_match_full(match)
 
 
 def get_view_mode(args: argparse.Namespace) -> str:

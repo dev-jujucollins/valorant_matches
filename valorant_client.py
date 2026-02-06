@@ -39,7 +39,6 @@ from match_extractor import (
     Match,
     extract_date_time,
     extract_match_data,
-    format_eta,
     is_upcoming_match,
 )
 
@@ -279,24 +278,7 @@ class ValorantClient(CircuitBreakerMixin):
 
     def _format_match_output(self, match: Match) -> str:
         """Format match data for display."""
-        separator = "─" * 100
-        date_time = self.formatter.date_time(f"{match.date}  {match.time}")
-        teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
-        stats_link = self.formatter.stats_link(f"Stats: {match.url}")
-
-        # Determine status and score display
-        if match.is_live:
-            status = self.formatter.live_status("LIVE")
-            score = self.formatter.score(match.score)
-            return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
-        elif match.is_upcoming:
-            # Display time until match starts if available (e.g., "1h 30m", "2d 5h")
-            eta = format_eta(match.score)
-            status = self.formatter.warning(eta)
-            return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
-        else:
-            score = self.formatter.score(match.score)
-            return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.formatter.muted(separator)}\n"
+        return self.formatter.format_match_full(match)
 
     def display_menu(self) -> str:
         """Display the event selection menu."""

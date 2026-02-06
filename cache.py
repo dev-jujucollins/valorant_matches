@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -124,7 +125,7 @@ class MatchCache:
         # Store in memory cache (fast access)
         self._memory_set(key, data)
 
-        # Persist to disk
+        # Persist to disk atomically (write to temp file, then rename)
         cache_path = self._get_cache_path(key)
         try:
             cache_entry = {
@@ -132,8 +133,14 @@ class MatchCache:
                 "timestamp": time.time(),
                 "data": data,
             }
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(cache_entry, f, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(dir=self.cache_dir, suffix=".tmp")
+            try:
+                with open(fd, "w", encoding="utf-8") as f:
+                    json.dump(cache_entry, f, ensure_ascii=False, indent=2)
+                Path(tmp_path).replace(cache_path)
+            except BaseException:
+                Path(tmp_path).unlink(missing_ok=True)
+                raise
             logger.debug(f"Cached data for {url}")
 
         except OSError as e:
@@ -179,9 +186,8 @@ class MatchCache:
             except OSError:
                 pass
 
-        total = max(memory_count, disk_count)
-        logger.info(f"Cleared {total} cache entries")
-        return total
+        logger.info(f"Cleared {disk_count} disk / {memory_count} memory cache entries")
+        return disk_count
 
     def clear_expired(self) -> int:
         """Clear only expired cache entries. Returns number of entries cleared."""

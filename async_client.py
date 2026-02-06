@@ -27,7 +27,6 @@ from match_extractor import (
     Match,
     extract_date_time,
     extract_match_data,
-    format_eta,
     is_upcoming_match,
 )
 
@@ -233,27 +232,12 @@ class AsyncValorantClient(CircuitBreakerMixin):
             return match
 
         except Exception as e:
-            logger.error(f"Error processing match {match_url}: {e}")
+            logger.error(f"Error processing match {match_url}: {e}", exc_info=True)
             return None
 
     def _format_match_output(self, match: Match) -> str:
         """Format match data for display."""
-        separator = "─" * 100
-        date_time = self.formatter.date_time(f"{match.date}  {match.time}")
-        teams = self.formatter.team_name(f"{match.team1} vs {match.team2}")
-        stats_link = self.formatter.stats_link(f"Stats: {match.url}")
-
-        if match.is_live:
-            status = self.formatter.live_status("LIVE")
-            score = self.formatter.score(match.score)
-            return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
-        elif match.is_upcoming:
-            eta = format_eta(match.score)
-            status = self.formatter.warning(eta)
-            return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.formatter.muted(separator)}\n"
-        else:
-            score = self.formatter.score(match.score)
-            return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.formatter.muted(separator)}\n"
+        return self.formatter.format_match_full(match)
 
 
 async def process_matches_async(
@@ -296,6 +280,7 @@ async def process_matches_async(
                 continue
             results.append((link, match))
 
-    # Sort by original order
-    sorted_results = sorted(results, key=lambda x: match_links.index(x[0]))
+    # Sort by original order (O(n) index lookup via dict)
+    link_order = {id(link): i for i, link in enumerate(match_links)}
+    sorted_results = sorted(results, key=lambda x: link_order[id(x[0])])
     return (sorted_results, tbd_count)

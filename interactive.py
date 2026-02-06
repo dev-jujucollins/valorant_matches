@@ -81,7 +81,7 @@ def run_interactive_mode(
 
             # Display event menu
             print(f"\n{formatter.info(' Available Events:', bold=True)}")
-            print(f"{formatter.muted('  (Press h for keyboard shortcuts)')}")
+            print(f"{formatter.muted('  q: quit | r: refresh | h: all shortcuts')}")
             for i, event in enumerate(events, 1):
                 status = f" [{event.status}]" if event.status != "unknown" else ""
                 print(
@@ -89,14 +89,7 @@ def run_interactive_mode(
                     f"{formatter.highlight(event.name)}"
                     f"{formatter.muted(status)}"
                 )
-            print(
-                f"{formatter.primary(f'{len(events) + 1}.', bold=True)} "
-                f"{formatter.muted('Refresh events')}"
-            )
-            print(
-                f"{formatter.primary(f'{len(events) + 2}.', bold=True)} "
-                f"{formatter.muted('Exit')}\n"
-            )
+            print()
 
             # Show active filters
             if current_team_filter or current_sort or current_group:
@@ -171,21 +164,6 @@ def run_interactive_mode(
                 else:
                     current_group = None
                 continue
-
-            # Handle refresh (numeric)
-            if selected == str(len(events) + 1):
-                logger.info("User requested event refresh")
-                print(f"\n{formatter.info('Refreshing events...')}")
-                force_refresh = True
-                continue
-
-            # Handle exit (numeric)
-            if selected == str(len(events) + 2):
-                logger.info("User chose to exit")
-                print(
-                    f"\n{formatter.success('Thank you for using the Valorant Match Tracker!')}"
-                )
-                break
 
             # Validate selection
             try:

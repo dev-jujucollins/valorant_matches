@@ -1,7 +1,14 @@
 # Formatter class using Rich library for consistent terminal styling.
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
+
+if TYPE_CHECKING:
+    from match_extractor import Match
 
 # Custom theme for consistent styling across the application
 VALORANT_THEME = Theme(
@@ -137,6 +144,27 @@ class Formatter:
             match_str = f"{team1} {score} {team2}"
 
         return f"{self.muted(date)} | {self.team_name(match_str)} | {status}"
+
+    def format_match_full(self, match: Match) -> str:
+        """Format match data for full multi-line display."""
+        from match_extractor import format_eta
+
+        separator = "─" * 100
+        date_time = self.date_time(f"{match.date}  {match.time}")
+        teams = self.team_name(f"{match.team1} vs {match.team2}")
+        stats_link = self.stats_link(f"Stats: {match.url}")
+
+        if match.is_live:
+            status = self.live_status("LIVE")
+            score = self.score(match.score)
+            return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.muted(separator)}\n"
+        elif match.is_upcoming:
+            eta = format_eta(match.score)
+            status = self.warning(eta)
+            return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.muted(separator)}\n"
+        else:
+            score = self.score(match.score)
+            return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.muted(separator)}\n"
 
     def print_stats_footer(
         self,
