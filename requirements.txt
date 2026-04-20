@@ -14,3 +14,5 @@ linkify-it-py==2.0.3
 mdurl==0.1.2
 colorlog==6.8.2
 python-dotenv==1.0.0
+aiohttp>=3.9.0
+cachetools>=5.0.0

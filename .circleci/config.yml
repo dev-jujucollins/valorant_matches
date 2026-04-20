@@ -1,0 +1,41 @@
+version: 2.1
+
+jobs:
+  ci:
+    docker:
+      - image: cimg/python:3.11
+    working_directory: ~/project
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - uv-v1-{{ checksum "uv.lock" }}-{{ checksum "pyproject.toml" }}
+            - uv-v1-
+      - run:
+          name: Install uv
+          command: python -m pip install uv
+      - run:
+          name: Sync dependencies
+          command: uv sync --locked
+      - run:
+          name: Run linter
+          command: uv run ruff check .
+      - run:
+          name: Run type checker
+          command: uv run pyright
+      - run:
+          name: Run tests
+          command: |
+            mkdir -p test-results
+            uv run pytest --junitxml=test-results/junit.xml
+      - store_test_results:
+          path: test-results
+      - save_cache:
+          key: uv-v1-{{ checksum "uv.lock" }}-{{ checksum "pyproject.toml" }}
+          paths:
+            - ~/.cache/uv
+
+workflows:
+  ci:
+    jobs:
+      - ci
