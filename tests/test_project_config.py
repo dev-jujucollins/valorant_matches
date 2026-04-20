@@ -33,10 +33,17 @@ class TestRequirementsFile:
 class TestCircleCIConfig:
     """Tests for CircleCI test job wiring."""
 
-    def test_circleci_runs_tests_in_uv_environment(self):
-        """CircleCI should install and run tests from the project uv environment."""
+    def test_circleci_runs_checks_in_uv_environment(self):
+        """CircleCI should install and run checks from the project uv environment."""
         config_text = (ROOT_DIR / ".circleci" / "config.yml").read_text()
 
+        assert "working_directory: ~/project" in config_text
+        assert 'uv-v1-{{ checksum "uv.lock" }}-{{ checksum "pyproject.toml" }}' in (
+            config_text
+        )
         assert "python -m pip install uv" in config_text
-        assert "command: uv sync" in config_text
-        assert "command: uv run pytest --junitxml=junit.xml" in config_text
+        assert "command: uv sync --locked" in config_text
+        assert "command: uv run ruff check ." in config_text
+        assert "command: uv run pyright" in config_text
+        assert "uv run pytest --junitxml=test-results/junit.xml" in config_text
+        assert "path: test-results" in config_text
