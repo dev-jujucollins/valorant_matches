@@ -106,7 +106,6 @@ __pypackages__/
 
 # UV
 .uv/
-uv.lock
 
 # Celery stuff
 celerybeat-schedule

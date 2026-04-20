@@ -47,3 +47,10 @@ class TestCircleCIConfig:
         assert "command: uv run pyright" in config_text
         assert "uv run pytest --junitxml=test-results/junit.xml" in config_text
         assert "path: test-results" in config_text
+
+    def test_circleci_locked_sync_requires_committed_lockfile(self):
+        """CircleCI locked sync should have a checked-in uv.lock file."""
+        config_text = (ROOT_DIR / ".circleci" / "config.yml").read_text()
+
+        assert "command: uv sync --locked" in config_text
+        assert (ROOT_DIR / "uv.lock").exists()
