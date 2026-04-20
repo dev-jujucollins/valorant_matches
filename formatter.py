@@ -1,6 +1,7 @@
 # Formatter class using Rich library for consistent terminal styling.
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -51,10 +52,17 @@ class Formatter:
         formatted = Text(text)
         formatted.stylize(" ".join(style_parts))
 
-        # Return as string with ANSI codes for compatibility
-        with self.console.capture() as capture:
-            self.console.print(formatted, end="")
-        return capture.get()
+        # Rich only includes ANSI styles when exporting recorded output.
+        # Use off-screen buffer so formatting doesn't print immediately.
+        render_console = Console(
+            file=io.StringIO(),
+            theme=VALORANT_THEME,
+            force_terminal=True,
+            width=self.console.width,
+            record=True,
+        )
+        render_console.print(formatted, end="")
+        return render_console.export_text(styles=True)
 
     def error(self, text: str, bold: bool = True) -> str:
         """Format error messages."""

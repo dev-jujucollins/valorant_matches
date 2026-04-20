@@ -22,6 +22,12 @@ class TestFormatter:
         # Should contain ANSI escape codes
         assert "\x1b[" in result
 
+    def test_format_does_not_print_directly(self, formatter, capsys):
+        """Formatting should return styled text without writing to stdout."""
+        formatter.format("Hello", "bright_cyan")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
     def test_format_with_bold(self, formatter):
         """Test formatting with bold style."""
         result = formatter.format("Bold Text", "bright_cyan", bold=True)

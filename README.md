@@ -9,11 +9,12 @@ A Python application that fetches and displays match results from the Valorant C
 - **View modes**: All matches, Results only, or Upcoming only
 - **Display options**: Compact mode, sorting (date/team), grouping (date/status)
 - **Export**: Save matches to JSON or CSV format
-- **Team filtering**: Filter matches by team name
+- **Team filtering**: Filter matches by team name, with fuzzy suggestions in interactive mode
 - **Interactive mode**: Keyboard shortcuts for quick navigation
-- **User profiles**: Persistent configuration for preferences
 - **Caching**: Match data cached locally with configurable TTL
 - **Auto-discovery**: Automatically discovers current VCT events from vlr.gg
+- **Diagnostics**: Built-in doctor mode for connectivity, cache, and discovery checks
+- **Shell completion**: Print completion scripts for bash, zsh, and fish
 - Async/concurrent match processing for faster results
 - Beautiful terminal output with Rich formatting
 - **Resilient web scraping** with fallback CSS selectors
@@ -70,10 +71,17 @@ python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-3. Install dependencies:
+3. Install project:
+
+```bash
+pip install -e .
+```
+
+If you only want dependency install without package entry points:
 
 ```bash
 pip install -r requirements.txt
+python main.py
 ```
 
 ## Usage
@@ -83,7 +91,7 @@ pip install -r requirements.txt
 Run without arguments to enter interactive mode:
 
 ```bash
-python main.py
+uv run valorant-matches
 ```
 
 The application will display a menu of available VCT events. Use keyboard shortcuts for quick navigation:
@@ -97,37 +105,43 @@ The application will display a menu of available VCT events. Use keyboard shortc
 | `g` | Group matches |
 | `h` | Show help |
 
+Interactive team filter supports partial names and fuzzy suggestions from loaded matches.
+
 ### CLI Mode
 
 Fetch matches directly with command-line arguments:
 
 ```bash
 # Basic usage - fetch matches for a region
-python main.py --region americas
-python main.py -r emea
+uv run valorant-matches --region americas
+uv run valorant-matches -r emea
 
 # Filter by match status
-python main.py -r americas --upcoming    # Only upcoming matches
-python main.py -r americas --results     # Only completed matches
+uv run valorant-matches -r americas --upcoming    # Only upcoming matches
+uv run valorant-matches -r americas --results     # Only completed matches
 
 # Display options
-python main.py -r americas --compact              # Single-line format
-python main.py -r americas --sort date            # Sort by date
-python main.py -r americas --sort team            # Sort by team name
-python main.py -r americas --group-by status      # Group by live/upcoming/completed
-python main.py -r americas --group-by date        # Group by date
+uv run valorant-matches -r americas --compact              # Single-line format
+uv run valorant-matches -r americas --sort date            # Sort by date
+uv run valorant-matches -r americas --sort team            # Sort by team name
+uv run valorant-matches -r americas --group-by status      # Group by live/upcoming/completed
+uv run valorant-matches -r americas --group-by date        # Group by date
 
 # Filter by team
-python main.py -r americas --team sentinels
+uv run valorant-matches -r americas --team sentinels
 
 # Export matches
-python main.py -r americas --export json                    # Export to matches.json
-python main.py -r americas --export csv --output results.csv  # Custom filename
+uv run valorant-matches -r americas --export json                    # Export to matches.json
+uv run valorant-matches -r americas --export csv --output results.csv  # Custom filename
 
 # Other options
-python main.py --clear-cache      # Clear cached data
-python main.py --no-cache         # Disable caching for this run
-python main.py --refresh-events   # Force refresh event discovery
+uv run valorant-matches --clear-cache           # Clear cached data
+uv run valorant-matches --no-cache              # Disable caching for this run
+uv run valorant-matches --list-regions          # Show discovered regions/events
+uv run valorant-matches --refresh               # Force refresh event discovery
+uv run valorant-matches --doctor                # Run diagnostics
+uv run valorant-matches --quickstart            # Show quickstart
+uv run valorant-matches --print-completion zsh  # Print shell completion
 ```
 
 ### Region Aliases
@@ -174,7 +188,6 @@ valorant_matches/
 ├── interactive.py       # Interactive mode with keyboard shortcuts
 ├── match_extractor.py   # HTML parsing and data extraction
 ├── exporters.py         # JSON/CSV export functionality
-├── config_profile.py    # User configuration profile management
 ├── config.py            # Configuration and constants
 ├── formatter.py         # Rich-based terminal formatting
 ├── cache.py             # Match data caching with TTL
@@ -183,9 +196,13 @@ valorant_matches/
 │   ├── test_cache.py
 │   ├── test_cli_mode.py
 │   ├── test_config.py
-│   ├── test_config_profile.py
+│   ├── test_event_discovery.py
+│   ├── test_event_manager.py
 │   ├── test_exporters.py
 │   ├── test_formatter.py
+│   ├── test_integration.py
+│   ├── test_main.py
+│   ├── test_match_extractor.py
 │   └── test_valorant_client.py
 ├── pyproject.toml       # Project metadata and dependencies
 ├── requirements.txt     # Legacy pip dependencies
@@ -235,4 +252,3 @@ Preview:
 <img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 02 AM" src="https://github.com/user-attachments/assets/ddbf326b-9348-48dd-a856-619cf2787a78" />
 <img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 43 AM" src="https://github.com/user-attachments/assets/9dd2385c-9ab8-43b4-ad53-a23fc038b239" />
 <img width="929" height="693" alt="Screenshot 2025-11-09 at 10 24 50 AM" src="https://github.com/user-attachments/assets/951e69dd-f5c7-4345-be0b-adb92b180b42" />
-

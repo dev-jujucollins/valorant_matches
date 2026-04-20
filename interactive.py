@@ -2,6 +2,7 @@
 
 import json
 import logging
+from difflib import get_close_matches
 
 from requests.exceptions import RequestException
 
@@ -14,6 +15,7 @@ from cli_mode import (
 from config import EVENTS
 from event_discovery import DiscoveredEvent, EventDiscovery
 from formatter import Formatter
+from match_extractor import Match
 from valorant_client import ValorantClient
 
 logger = logging.getLogger("valorant_matches")
@@ -37,6 +39,23 @@ def print_shortcuts(formatter: Formatter) -> None:
     print()
 
 
+def _print_next_step_hint(formatter: Formatter, hint: str) -> None:
+    """Print a lightweight next-step hint in interactive mode."""
+    print(f"{formatter.muted(f'Next: {hint}')}\n")
+
+
+def _suggest_team_names(
+    results: list[tuple[dict, Match]], team_filter: str, limit: int = 3
+) -> list[str]:
+    """Return close team-name matches from loaded match results."""
+    team_names = {match.team1 for _, match in results} | {
+        match.team2 for _, match in results
+    }
+    if not team_names:
+        return []
+    return get_close_matches(team_filter, sorted(team_names), n=limit, cutoff=0.5)
+
+
 def run_interactive_mode(
     formatter: Formatter,
     discovery: EventDiscovery,
@@ -56,6 +75,7 @@ def run_interactive_mode(
     current_team_filter: str | None = None
     current_sort: str | None = None
     current_group: str | None = None
+    last_loaded_results: list[tuple[dict, Match]] = []
 
     while True:
         try:
@@ -81,7 +101,9 @@ def run_interactive_mode(
 
             # Display event menu
             print(f"\n{formatter.info(' Available Events:', bold=True)}")
-            print(f"{formatter.muted('  q: quit | r: refresh | h: all shortcuts')}")
+            print(
+                f"{formatter.muted('  Enter an event number to open it | q: quit | r: refresh | h: all shortcuts')}"
+            )
             for i, event in enumerate(events, 1):
                 status = f" [{event.status}]" if event.status != "unknown" else ""
                 print(
@@ -120,6 +142,7 @@ def run_interactive_mode(
                 logger.info("User requested event refresh via shortcut")
                 print(f"\n{formatter.info('Refreshing events...')}")
                 force_refresh = True
+                _print_next_step_hint(formatter, "choose an event number after refresh")
                 continue
 
             if selected == "h":
@@ -128,13 +151,24 @@ def run_interactive_mode(
 
             if selected == "f":
                 team = input(
-                    f"{formatter.info('Enter team name to filter (empty to clear):')} "
+                    f"{formatter.info('Enter team name to filter (supports partial/fuzzy, empty to clear):')} "
                 ).strip()
                 current_team_filter = team if team else None
                 if current_team_filter:
                     print(f"{formatter.success(f'Filter set: {current_team_filter}')}")
+                    if last_loaded_results:
+                        suggestions = _suggest_team_names(
+                            last_loaded_results, current_team_filter
+                        )
+                        if suggestions:
+                            print(
+                                f"{formatter.muted('Did you mean: ' + ', '.join(suggestions))}"
+                            )
                 else:
                     print(f"{formatter.muted('Filter cleared')}")
+                _print_next_step_hint(
+                    formatter, "pick an event number to apply the filter"
+                )
                 continue
 
             if selected == "s":
@@ -149,6 +183,9 @@ def run_interactive_mode(
                     current_sort = "team"
                 else:
                     current_sort = None
+                _print_next_step_hint(
+                    formatter, "pick an event number to apply sorting"
+                )
                 continue
 
             if selected == "g":
@@ -163,6 +200,9 @@ def run_interactive_mode(
                     current_group = "status"
                 else:
                     current_group = None
+                _print_next_step_hint(
+                    formatter, "pick an event number to apply grouping"
+                )
                 continue
 
             # Validate selection
@@ -182,7 +222,10 @@ def run_interactive_mode(
             if not match_links:
                 logger.warning("No matches found for selected event")
                 print(
-                    f"\n{formatter.warning('No matches found for the selected event')}\n"
+                    f"\n{formatter.warning('No matches were found for this event page yet.')}"
+                )
+                print(
+                    f"{formatter.muted('Try another event, press r to refresh, or run later when matches are posted.')}\n"
                 )
                 continue
 
@@ -195,6 +238,7 @@ def run_interactive_mode(
             view_mode = view_mode_map.get(view_mode_option, "all")
 
             results, _tbd_count = process_matches_func(client, match_links, view_mode)
+            last_loaded_results = results[:]
 
             # Apply team filter if set
             if current_team_filter:
@@ -213,18 +257,39 @@ def run_interactive_mode(
             if not results:
                 if current_team_filter:
                     print(
-                        f"\n{formatter.warning(f'No matches found for team: {current_team_filter}')}\n"
+                        f"\n{formatter.warning(f'No matches found for team filter: {current_team_filter}')}"
+                    )
+                    suggestions = _suggest_team_names(
+                        last_loaded_results, current_team_filter
+                    )
+                    if suggestions:
+                        print(
+                            f"{formatter.muted('Try one of: ' + ', '.join(suggestions))}"
+                        )
+                    print(
+                        f"{formatter.muted('You can press f to change/clear the team filter.')}\n"
                     )
                 elif view_mode == "upcoming":
                     print(
-                        f"\n{formatter.warning('No upcoming matches found for this event.')}\n"
+                        f"\n{formatter.warning('No upcoming matches are scheduled right now for this event.')}"
+                    )
+                    print(
+                        f"{formatter.muted('Try all matches mode or refresh events with r.')}\n"
                     )
                 elif view_mode == "results":
                     print(
-                        f"\n{formatter.warning('No completed matches found for this event.')}\n"
+                        f"\n{formatter.warning('No completed matches are available for this event yet.')}"
+                    )
+                    print(
+                        f"{formatter.muted('Try upcoming mode to see scheduled matches.')}\n"
                     )
                 else:
-                    print(f"\n{formatter.warning('No matches found.')}\n")
+                    print(
+                        f"\n{formatter.warning('No matches available to display right now.')}"
+                    )
+                    print(
+                        f"{formatter.muted('Press r to refresh events or pick another event.')}\n"
+                    )
             else:
                 # Apply grouping if set
                 if current_group:
@@ -247,8 +312,9 @@ def run_interactive_mode(
             break
         except RequestException as e:
             logger.error(f"Network error: {e}")
+            print(f"\n{formatter.error('Network error while talking to vlr.gg.')}")
             print(
-                f"\n{formatter.error('Network error. Please check your connection and try again.')}\n"
+                f"{formatter.muted('Check your connection, then press r to refresh events or retry your selection.')}\n"
             )
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"Data parsing error: {e}", exc_info=True)

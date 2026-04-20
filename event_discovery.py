@@ -112,6 +112,10 @@ class EventDiscovery:
                     return None
         return None
 
+    def can_reach_vlr(self) -> bool:
+        """Check if vlr.gg is reachable using normal discovery request settings."""
+        return self._make_request(BASE_URL) is not None
+
     def _slug_to_name(self, slug: str) -> str | None:
         """Convert event slug to human-readable name."""
         # Pattern: vct-2026-americas-kickoff -> VCT 2026: Americas Kickoff

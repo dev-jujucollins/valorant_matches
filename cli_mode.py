@@ -280,12 +280,20 @@ def run_cli_mode(
     if args.no_cache:
         logger.info("Cache disabled via --no-cache flag")
 
+    view_mode = get_view_mode(args)
+
     # Get event using auto-discovery
     event = get_event_for_region(
-        args.region, discovery, force_refresh=getattr(args, "refresh", False)
+        args.region,
+        discovery,
+        force_refresh=getattr(args, "refresh", False),
+        view_mode=view_mode,
     )
     if not event:
-        print(f"\n{formatter.error(f'No events found for region: {args.region}')}\n")
+        print(f"\n{formatter.error(f'No events found for region: {args.region}')}")
+        print(
+            f"{formatter.muted('Try --list-regions to see discovered options, or run with --refresh to force discovery.')}\n"
+        )
         return 1
 
     status_str = f" ({event.status})" if event.status != "unknown" else ""
@@ -295,11 +303,13 @@ def run_cli_mode(
 
     match_links = client.fetch_event_matches(event.url, event.slug)
     if not match_links:
-        print(f"\n{formatter.warning('No matches found for the selected event')}\n")
+        print(f"\n{formatter.warning('No matches found for the selected event page.')}")
+        print(
+            f"{formatter.muted('The event may not have posted matches yet. Try --refresh or check another region.')}\n"
+        )
         return 0
 
     stats.total = len(match_links)
-    view_mode = get_view_mode(args)
     results, tbd_count = process_matches_func(client, match_links, view_mode)
     stats.tbd_count = tbd_count
 
@@ -327,18 +337,32 @@ def run_cli_mode(
     if not results:
         if team_filter:
             print(
-                f"\n{formatter.warning(f'No matches found for team: {team_filter}')}\n"
+                f"\n{formatter.warning(f'No matches found for team filter: {team_filter}')}"
+            )
+            print(
+                f"{formatter.muted('Try a shorter team name with --team, or remove the filter.')}\n"
             )
         elif view_mode == "upcoming":
             print(
-                f"\n{formatter.warning('No upcoming matches found for this event.')}\n"
+                f"\n{formatter.warning('No upcoming matches are scheduled right now for this event.')}"
+            )
+            print(
+                f"{formatter.muted('Try removing --upcoming to view all matches.')}\n"
             )
         elif view_mode == "results":
             print(
-                f"\n{formatter.warning('No completed matches found for this event.')}\n"
+                f"\n{formatter.warning('No completed matches are available for this event yet.')}"
+            )
+            print(
+                f"{formatter.muted('Try --upcoming to view scheduled matches instead.')}\n"
             )
         else:
-            print(f"\n{formatter.warning('No matches found.')}\n")
+            print(
+                f"\n{formatter.warning('No matches available to display right now.')}"
+            )
+            print(
+                f"{formatter.muted('Try --refresh, --list-regions, or another region alias.')}\n"
+            )
     else:
         options = get_display_options(args)
         display_results(results, formatter, options, stats)

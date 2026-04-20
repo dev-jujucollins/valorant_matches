@@ -156,6 +156,14 @@ class TestEventDiscovery:
         assert events == []
 
     @patch.object(EventDiscovery, "_make_request")
+    def test_can_reach_vlr_uses_shared_request_path(self, mock_request, discovery):
+        """Connectivity checks should reuse discovery request settings."""
+        mock_request.return_value = BeautifulSoup("<html></html>", "html.parser")
+
+        assert discovery.can_reach_vlr() is True
+        mock_request.assert_called_once()
+
+    @patch.object(EventDiscovery, "_make_request")
     def test_discover_events_uses_cache(self, mock_request, discovery):
         """Test event discovery uses cache on subsequent calls."""
         mock_html = """

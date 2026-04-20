@@ -5,12 +5,13 @@ import asyncio
 import logging
 import logging.config
 import sys
+import tempfile
 
 from rich.progress import Progress
 
 from async_client import AsyncValorantClient, process_matches_async
 from cli_mode import run_cli_mode
-from config import EVENTS, LOGGING_CONFIG
+from config import CACHE_DIR, EVENTS, LOGGING_CONFIG
 from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
 from formatter import Formatter
 from interactive import run_interactive_mode
@@ -25,21 +26,23 @@ REGION_CHOICES = []
 for aliases in REGION_ALIASES.values():
     REGION_CHOICES.extend(aliases)
 
+CLI_COMMAND = "valorant-matches"
+
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Fetch and display Valorant Champions Tour (VCT) match results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
-  python main.py                          # Interactive mode
-  python main.py --region americas        # Show all Americas matches
-  python main.py -r emea --upcoming       # Show upcoming EMEA matches
-  python main.py -r china --results       # Show completed China matches
-  python main.py --region champions --no-cache  # Force fresh data
-  python main.py --list-regions           # List available regions (auto-discovered)
-  python main.py --refresh                # Force refresh event discovery
+  {CLI_COMMAND}                          # Interactive mode
+  {CLI_COMMAND} --region americas        # Show all Americas matches
+  {CLI_COMMAND} -r emea --upcoming       # Show upcoming EMEA matches
+  {CLI_COMMAND} -r china --results       # Show completed China matches
+  {CLI_COMMAND} --region champions --no-cache  # Force fresh data
+  {CLI_COMMAND} --list-regions           # List available regions (auto-discovered)
+  {CLI_COMMAND} --refresh                # Force refresh event discovery
 
 Available regions:
   americas (am)    - VCT Americas
@@ -118,7 +121,159 @@ Available regions:
         type=str,
         help="Filter matches by team name (case-insensitive)",
     )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run diagnostics for network, cache, and event discovery",
+    )
+    parser.add_argument(
+        "--quickstart",
+        action="store_true",
+        help="Show a quickstart guide and exit",
+    )
+    parser.add_argument(
+        "--print-completion",
+        choices=["bash", "zsh", "fish"],
+        help="Print shell completion script for bash, zsh, or fish",
+    )
     return parser.parse_args()
+
+
+def get_completion_script(shell: str) -> str:
+    """Generate shell completion script for supported shells."""
+    options = [
+        "-r",
+        "--region",
+        "--upcoming",
+        "--results",
+        "--no-cache",
+        "--clear-cache",
+        "--list-regions",
+        "--refresh",
+        "--compact",
+        "--group-by",
+        "--sort",
+        "--export",
+        "--output",
+        "--team",
+        "--doctor",
+        "--quickstart",
+        "--print-completion",
+        "--help",
+    ]
+    words = " ".join(options)
+    regions = " ".join(REGION_CHOICES)
+    if shell == "bash":
+        return f"""_valorant_matches_completions() {{
+    local cur prev
+    COMPREPLY=()
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+    if [[ "$prev" == "--region" || "$prev" == "-r" ]]; then
+        COMPREPLY=($(compgen -W "{regions}" -- "$cur"))
+        return 0
+    fi
+    COMPREPLY=($(compgen -W "{words}" -- "$cur"))
+}}
+complete -F _valorant_matches_completions {CLI_COMMAND}
+"""
+    if shell == "zsh":
+        return f"""#compdef {CLI_COMMAND}
+_valorant_matches_completions() {{
+  local -a opts regions
+  opts=({words})
+  regions=({regions})
+  if [[ $words[CURRENT-1] == "--region" || $words[CURRENT-1] == "-r" ]]; then
+    _describe 'regions' regions
+    return
+  fi
+  _describe 'options' opts
+}}
+compdef _valorant_matches_completions {CLI_COMMAND}
+"""
+    return f"""function __valorant_matches_complete
+    set -l cmd (commandline -opc)
+    set -l last (commandline -ct)
+    if test (count $cmd) -ge 2
+        set -l prev $cmd[-1]
+        if test "$prev" = "--region" -o "$prev" = "-r"
+            for r in {regions}
+                echo $r
+            end
+            return
+        end
+    end
+    for opt in {words}
+        echo $opt
+    end
+end
+complete -c {CLI_COMMAND} -a "(__valorant_matches_complete)"
+"""
+
+
+def print_quickstart(formatter: Formatter) -> None:
+    """Print a concise quickstart guide."""
+    print(f"\n{formatter.info('Quickstart', bold=True)}")
+    print(f"{formatter.muted('1) Interactive mode:')} uv run {CLI_COMMAND}")
+    print(
+        f"{formatter.muted('2) Region results:')} uv run {CLI_COMMAND} -r americas --results"
+    )
+    print(
+        f"{formatter.muted('3) Upcoming only:')} uv run {CLI_COMMAND} -r emea --upcoming"
+    )
+    print(
+        f"{formatter.muted('4) Team filter:')} uv run {CLI_COMMAND} -r pacific --team fnatic"
+    )
+    print(f"{formatter.muted('5) Troubleshoot:')} uv run {CLI_COMMAND} --doctor\n")
+
+
+def run_doctor(formatter: Formatter, discovery: EventDiscovery) -> int:
+    """Run diagnostics and print actionable results."""
+    print(f"\n{formatter.info('Running diagnostics...', bold=True)}")
+    failures = 0
+
+    if discovery.can_reach_vlr():
+        print(f"{formatter.success('✓ Network check: vlr.gg reachable')}")
+    else:
+        failures += 1
+        logger.warning("Doctor network check failed via discovery session")
+        print(f"{formatter.error('✗ Network check failed')}")
+        print(
+            f"{formatter.muted('  Try again in a minute, or run with --refresh once connectivity returns.')}"
+        )
+
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=CACHE_DIR, delete=True):
+            pass
+        print(f"{formatter.success('✓ Cache check: cache directory is writable')}")
+    except OSError as e:
+        failures += 1
+        logger.warning(f"Doctor cache check failed: {e}")
+        print(f"{formatter.error('✗ Cache check failed')}")
+        print(
+            f"{formatter.muted('  Verify filesystem permissions for .cache/ or run with --no-cache.')}"
+        )
+
+    events = discovery.discover_events(force_refresh=True)
+    if events:
+        print(
+            f"{formatter.success(f'✓ Event discovery: found {len(events)} active events')}"
+        )
+    else:
+        failures += 1
+        print(f"{formatter.warning('! Event discovery returned no live events')}")
+        print(
+            f"{formatter.muted('  The app will use fallback events. You can still run with --region.')}"
+        )
+
+    if failures:
+        print(
+            f"\n{formatter.warning(f'Diagnostics finished with {failures} issue(s).')}\n"
+        )
+        return 1
+    print(f"\n{formatter.success('Diagnostics passed. You are good to go.')}\n")
+    return 0
 
 
 async def process_matches_with_progress(
@@ -189,6 +344,14 @@ def main() -> None:
     formatter = Formatter()
 
     # Handle special commands first
+    if args.quickstart:
+        print_quickstart(formatter)
+        sys.exit(0)
+
+    if args.print_completion:
+        print(get_completion_script(args.print_completion))
+        sys.exit(0)
+
     if args.clear_cache:
         from cache import MatchCache
 
@@ -200,6 +363,10 @@ def main() -> None:
     # Initialize event discovery
     discovery = EventDiscovery()
     force_refresh = getattr(args, "refresh", False)
+
+    if args.doctor:
+        exit_code = run_doctor(formatter, discovery)
+        sys.exit(exit_code)
 
     if args.list_regions:
         print(f"\n{formatter.info('Discovering VCT events...', bold=True)}\n")
