@@ -45,6 +45,10 @@ EVENT_LINK_PATTERN = re.compile(r"^/event/\d+/")
 EVENT_NAME_PATTERN = re.compile(
     r"((?:VCT \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)"
 )
+OFFICIAL_VCT_NAME_PATTERN = re.compile(
+    r"^(?:VCT \d{4}:|Valorant (?:Champions|Masters)(?:\s+[A-Za-z]+)?\s+\d{4}\b)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -151,9 +155,9 @@ class EventDiscovery:
             return "pacific"
         elif "china" in name_lower:
             return "china"
-        elif "champions" in name_lower:
+        elif re.search(r"\bvalorant champions \d{4}\b", name_lower):
             return "champions"
-        elif "masters" in name_lower:
+        elif re.search(r"\bvalorant masters\b", name_lower):
             return "masters"
         return "other"
 
@@ -258,11 +262,9 @@ class EventDiscovery:
     def _is_vct_international(self, name: str) -> bool:
         """Check if event is a VCT international event (not Challengers/GC)."""
         name_lower = name.lower()
-        # Include VCT Kickoff, Stage, Masters, Champions
-        if "vct" in name_lower or "champions" in name_lower or "masters" in name_lower:
-            # Exclude Challengers and Game Changers
-            return "challengers" not in name_lower and "game changers" not in name_lower
-        return False
+        if "challengers" in name_lower or "game changers" in name_lower:
+            return False
+        return bool(OFFICIAL_VCT_NAME_PATTERN.match(name))
 
     def get_events_by_region(
         self, region: str, force_refresh: bool = False

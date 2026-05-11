@@ -83,6 +83,10 @@ class TestEventDiscovery:
         """Test region parsing for Champions."""
         assert discovery._parse_region("Valorant Champions 2026") == "champions"
 
+    def test_parse_region_college_championship_is_other(self, discovery):
+        """Test collegiate championships are not parsed as Champions."""
+        assert discovery._parse_region("College VALORANT Championship 2026") == "other"
+
     def test_parse_region_masters(self, discovery):
         """Test region parsing for Masters."""
         assert discovery._parse_region("Valorant Masters Santiago 2026") == "masters"
@@ -109,6 +113,13 @@ class TestEventDiscovery:
         """Test VCT international check for Champions."""
         assert discovery._is_vct_international("Valorant Champions 2026") is True
 
+    def test_is_vct_international_college_championship_excluded(self, discovery):
+        """Test collegiate championships are excluded."""
+        assert (
+            discovery._is_vct_international("College VALORANT Championship 2026")
+            is False
+        )
+
     def test_is_vct_international_masters(self, discovery):
         """Test VCT international check for Masters."""
         assert discovery._is_vct_international("Valorant Masters London 2026") is True
@@ -133,6 +144,7 @@ class TestEventDiscovery:
         <body>
             <a href="/event/2682/vct-2026-americas-kickoff">VCT 2026: Americas Kickoff</a>
             <a href="/event/2684/vct-2026-emea-kickoff">VCT 2026: EMEA Kickoff</a>
+            <a href="/event/3000/college-valorant-championship-2026">College VALORANT Championship 2026</a>
             <a href="/event/9999/challengers-na">Challengers NA</a>
         </body>
         </html>
