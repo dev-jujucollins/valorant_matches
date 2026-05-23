@@ -71,7 +71,8 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-exclude = ["archived"]
+include = ["*.py", "tests"]
+exclude = [".venv", "archived"]
 
 [tool.ruff]
 line-length = 88

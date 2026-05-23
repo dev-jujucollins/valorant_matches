@@ -160,7 +160,6 @@ cython_debug/
 .vscode
 .DS_Store
 *.xml
-test_main.py
 settings.json
 .gitignore
 archived/
