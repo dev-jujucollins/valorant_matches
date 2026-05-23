@@ -14,7 +14,8 @@ A Python application that fetches and displays match results from the Valorant C
 - **Caching**: Match data cached locally with configurable TTL
 - **Auto-discovery**: Automatically discovers current VCT events from vlr.gg
 - **Diagnostics**: Built-in doctor mode for connectivity, cache, and discovery checks
-- **Shell completion**: Print completion scripts for bash, zsh, and fish
+- **Saved defaults**: Configure default region, view, sorting, grouping, compact mode, cache, and favorite teams
+- **Shell completion**: Print or install completion scripts for bash, zsh, and fish
 - Async/concurrent match processing for faster results
 - Beautiful terminal output with Rich formatting
 - **Resilient web scraping** with fallback CSS selectors
@@ -142,6 +143,32 @@ uv run valorant-matches --refresh               # Force refresh event discovery
 uv run valorant-matches --doctor                # Run diagnostics
 uv run valorant-matches --quickstart            # Show quickstart
 uv run valorant-matches --print-completion zsh  # Print shell completion
+uv run valorant-matches --interactive -r emea   # Show CLI results, then enter interactive mode
+```
+
+CLI mode exits after printing or exporting results. Use `--interactive` when you want to continue browsing after a direct region query.
+
+### Saved Defaults
+
+Save common options so short commands do the right thing:
+
+```bash
+uv run valorant-matches config set default-region americas
+uv run valorant-matches config set default-view results
+uv run valorant-matches config set compact true
+uv run valorant-matches config set sort date
+uv run valorant-matches config set group-by status
+uv run valorant-matches config favorite add Sentinels
+uv run valorant-matches config get
+```
+
+After setting `default-region`, running `uv run valorant-matches` uses that region instead of opening interactive mode. Explicit CLI flags always override saved defaults.
+
+### Shell Completion
+
+```bash
+uv run valorant-matches completion print zsh
+uv run valorant-matches completion install zsh
 ```
 
 ### Region Aliases

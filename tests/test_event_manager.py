@@ -52,6 +52,21 @@ class TestGetEventForRegion:
         assert selected.status == "completed"
         assert selected.event_id == "103"
 
+    def test_prefers_latest_completed_when_no_ongoing_for_default_mode(self):
+        """Default mode should not pick an empty upcoming event over results."""
+        discovery = Mock()
+        discovery.get_events_by_region.return_value = [
+            make_event("101", "completed", region="emea"),
+            make_event("104", "upcoming", region="emea"),
+            make_event("103", "completed", region="emea"),
+        ]
+
+        selected = get_event_for_region("emea", discovery)
+
+        assert selected is not None
+        assert selected.status == "completed"
+        assert selected.event_id == "103"
+
     def test_prefers_upcoming_for_upcoming_mode(self):
         """Upcoming mode should prioritize upcoming events."""
         discovery = Mock()

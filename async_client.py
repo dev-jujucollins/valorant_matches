@@ -20,14 +20,15 @@ from config import (
 )
 from formatter import Formatter
 from match_extractor import (
-    EVENT_SLUG_PATTERN,
-    MATCH_URL_PATTERN,
     CircuitBreakerMixin,
     CircuitBreakerOpen,
     Match,
-    extract_date_time,
-    extract_match_data,
-    is_upcoming_match,
+    ProcessedMatches,
+    ProcessMatchResult,
+    build_match_from_soup,
+    extract_event_slug,
+    find_event_match_links,
+    should_use_cached_match,
 )
 
 logger = logging.getLogger("valorant_matches")
@@ -161,31 +162,22 @@ class AsyncValorantClient(CircuitBreakerMixin):
             return []
 
         if not event_slug:
-            slug_match = EVENT_SLUG_PATTERN.search(event_url)
-            if slug_match:
-                event_slug = slug_match.group(1)
+            event_slug = extract_event_slug(event_url)
 
         slug_pattern = self._get_slug_pattern(event_slug) if event_slug else None
 
-        match_links = []
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            if not MATCH_URL_PATTERN.match(href):
-                continue
-            if slug_pattern and not slug_pattern.search(href.lower()):
-                continue
-            match_links.append(link)
+        match_links = find_event_match_links(soup, slug_pattern)
 
         logger.info(f"Found {len(match_links)} match links")
         return match_links
 
     async def process_match(
         self, link: dict, upcoming_only: bool = False
-    ) -> Match | str | None:
+    ) -> ProcessMatchResult:
         """Process a single match asynchronously.
 
         Returns:
-            Match object if successful, "TBD" if teams not announced, None on failure.
+            ProcessMatchResult with match/status/cache metadata.
         """
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
@@ -195,45 +187,30 @@ class AsyncValorantClient(CircuitBreakerMixin):
                 cached_data = self.cache.get(match_url)
                 if cached_data:
                     cached_match = Match(**cached_data)
-                    if not cached_match.is_live and not cached_match.is_upcoming:
-                        return cached_match
+                    if should_use_cached_match(cached_match):
+                        return ProcessMatchResult(match=cached_match, cache_hit=True)
 
             soup = await self._make_request(match_url)
             if not soup:
-                return None
+                return ProcessMatchResult()
 
-            teams, score, is_live = extract_match_data(soup)
-            if "TBD" in teams:
-                return "TBD"  # Sentinel value for TBD matches
-
-            match_date, match_time = extract_date_time(soup)
-
-            is_upcoming = is_upcoming_match(score)
-
-            if upcoming_only and not is_upcoming and not is_live:
-                return None
-
-            match = Match(
-                date=match_date,
-                time=match_time,
-                team1=teams[0],
-                team2=teams[1],
-                score=score,
-                is_live=bool(is_live),
-                url=match_url,
-                is_upcoming=is_upcoming,
-            )
+            result = build_match_from_soup(soup, match_url)
+            if result.is_tbd or not result.match:
+                return result
+            match = result.match
+            if upcoming_only and not match.is_upcoming and not match.is_live:
+                return ProcessMatchResult()
 
             if self._cache_enabled and not match.is_live and not match.is_upcoming:
                 self.cache.set(match_url, asdict(match))
             elif self._cache_enabled:
                 self.cache.invalidate(match_url)
 
-            return match
+            return result
 
         except Exception as e:
             logger.error(f"Error processing match {match_url}: {e}", exc_info=True)
-            return None
+            return ProcessMatchResult()
 
     def _format_match_output(self, match: Match) -> str:
         """Format match data for display."""
@@ -245,14 +222,16 @@ async def process_matches_async(
     match_links: list[dict],
     view_mode: str = "all",
     progress_callback=None,
-) -> tuple[list[tuple[dict, Match]], int]:
+) -> ProcessedMatches:
     """Process matches concurrently using asyncio.
 
     Returns:
-        Tuple of (results, tbd_count) where results is list of (link_dict, Match) tuples.
+        ProcessedMatches where results is list of (link_dict, Match) tuples.
     """
     results: list[tuple[dict, Match]] = []
     tbd_count = 0
+    cache_hits = 0
+    failed_count = 0
     upcoming_only = view_mode == "upcoming"
     results_only = view_mode == "results"
 
@@ -270,17 +249,34 @@ async def process_matches_async(
     for item in completed:
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
+            failed_count += 1
             continue
-        # item is now guaranteed to be tuple[dict, Match | str | None]
-        link, match = item
-        if match == "TBD":
+        link, result = item
+        if not isinstance(result, ProcessMatchResult):
+            if isinstance(result, Match):
+                result = ProcessMatchResult(match=result)
+            elif result == "TBD":
+                result = ProcessMatchResult(is_tbd=True)
+            else:
+                result = ProcessMatchResult()
+
+        if result.is_tbd:
             tbd_count += 1
-        elif isinstance(match, Match):
-            if results_only and match.is_upcoming:
+        elif result.match:
+            if result.cache_hit:
+                cache_hits += 1
+            if results_only and result.match.is_upcoming:
                 continue
-            results.append((link, match))
+            results.append((link, result.match))
+        else:
+            failed_count += 1
 
     # Sort by original order (O(n) index lookup via dict)
     link_order = {id(link): i for i, link in enumerate(match_links)}
     sorted_results = sorted(results, key=lambda x: link_order[id(x[0])])
-    return (sorted_results, tbd_count)
+    return ProcessedMatches(
+        results=sorted_results,
+        tbd_count=tbd_count,
+        cache_hits=cache_hits,
+        failed_count=failed_count,
+    )

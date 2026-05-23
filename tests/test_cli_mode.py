@@ -1,6 +1,7 @@
 # Tests for cli_mode.py
 
 import argparse
+from unittest.mock import Mock, patch
 
 from cli_mode import (
     DisplayOptions,
@@ -10,9 +11,10 @@ from cli_mode import (
     get_match_status,
     get_view_mode,
     group_matches,
+    run_cli_mode,
     sort_matches,
 )
-from match_extractor import Match
+from match_extractor import Match, ProcessedMatches
 
 
 def make_match(
@@ -316,3 +318,111 @@ class TestFilterMatchesByTeam:
         ]
         filtered = filter_matches_by_team(results, "Fnatic")
         assert len(filtered) == 0
+
+
+class TestRunCliMode:
+    """Tests for CLI mode flow."""
+
+    def test_cli_mode_exits_after_results_by_default(self):
+        """CLI mode should not enter interactive mode unless requested."""
+        formatter = Mock()
+        formatter.info.side_effect = lambda text, bold=False: text
+        formatter.warning.side_effect = lambda text, bold=False: text
+        formatter.error.side_effect = lambda text, bold=False: text
+        formatter.muted.side_effect = lambda text, bold=False: text
+        formatter.print_stats_footer = Mock()
+
+        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
+        event.slug = "vct-americas"
+        client = Mock()
+        client.fetch_event_matches.return_value = [{"href": "/1/match"}]
+
+        args = argparse.Namespace(
+            region="americas",
+            no_cache=False,
+            upcoming=False,
+            results=False,
+            refresh=False,
+            team=None,
+            export=None,
+            compact=False,
+            group_by=None,
+            sort=None,
+            interactive=False,
+        )
+
+        processed = ProcessedMatches(
+            results=[
+                (
+                    {"href": "/1/match"},
+                    make_match(team1="Sentinels", team2="Cloud9"),
+                )
+            ],
+            tbd_count=0,
+            cache_hits=1,
+        )
+        process_matches = Mock(return_value=processed)
+        run_interactive = Mock(return_value=0)
+
+        with (
+            patch("cli_mode.ValorantClient", return_value=client),
+            patch("cli_mode.get_event_for_region", return_value=event),
+        ):
+            exit_code = run_cli_mode(
+                args, formatter, Mock(), process_matches, run_interactive
+            )
+
+        assert exit_code == 0
+        run_interactive.assert_not_called()
+        formatter.print_stats_footer.assert_called_once()
+
+    def test_cli_mode_enters_interactive_when_requested(self):
+        """--interactive should opt into post-results interactive mode."""
+        formatter = Mock()
+        formatter.info.side_effect = lambda text, bold=False: text
+        formatter.warning.side_effect = lambda text, bold=False: text
+        formatter.error.side_effect = lambda text, bold=False: text
+        formatter.muted.side_effect = lambda text, bold=False: text
+        formatter.print_stats_footer = Mock()
+
+        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
+        event.slug = "vct-americas"
+        client = Mock()
+        client.fetch_event_matches.return_value = [{"href": "/1/match"}]
+
+        args = argparse.Namespace(
+            region="americas",
+            no_cache=False,
+            upcoming=False,
+            results=False,
+            refresh=False,
+            team=None,
+            export=None,
+            compact=False,
+            group_by=None,
+            sort=None,
+            interactive=True,
+        )
+
+        process_matches = Mock(
+            return_value=ProcessedMatches(
+                results=[
+                    (
+                        {"href": "/1/match"},
+                        make_match(team1="Sentinels", team2="Cloud9"),
+                    )
+                ]
+            )
+        )
+        run_interactive = Mock(return_value=7)
+
+        with (
+            patch("cli_mode.ValorantClient", return_value=client),
+            patch("cli_mode.get_event_for_region", return_value=event),
+        ):
+            exit_code = run_cli_mode(
+                args, formatter, Mock(), process_matches, run_interactive
+            )
+
+        assert exit_code == 7
+        run_interactive.assert_called_once()

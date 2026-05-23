@@ -32,14 +32,14 @@ from config import (
 )
 from formatter import Formatter
 from match_extractor import (
-    EVENT_SLUG_PATTERN,
-    MATCH_URL_PATTERN,
     CircuitBreakerMixin,
     CircuitBreakerOpen,
     Match,
-    extract_date_time,
-    extract_match_data,
-    is_upcoming_match,
+    ProcessMatchResult,
+    build_match_from_soup,
+    extract_event_slug,
+    find_event_match_links,
+    should_use_cached_match,
 )
 
 _rate_limit_lock = threading.Lock()
@@ -180,32 +180,19 @@ class ValorantClient(CircuitBreakerMixin):
         if not soup:
             return []
 
-        # Extract event slug from URL if not provided (using pre-compiled pattern)
         if not event_slug:
-            slug_match = EVENT_SLUG_PATTERN.search(event_url)
-            if slug_match:
-                event_slug = slug_match.group(1)
+            event_slug = extract_event_slug(event_url)
 
-        # Get cached slug pattern for word boundary matching
         slug_pattern = self._get_slug_pattern(event_slug) if event_slug else None
-
-        # Find matching links using pre-compiled patterns
-        match_links = []
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            # Must start with /<number>/ (using pre-compiled MATCH_URL_PATTERN)
-            if not MATCH_URL_PATTERN.match(href):
-                continue
-            # If we have a slug, verify it matches as a complete segment
-            if slug_pattern and not slug_pattern.search(href.lower()):
-                continue
-            match_links.append(link)
+        match_links = find_event_match_links(soup, slug_pattern)
 
         logger.info(f"Found {len(match_links)} match links")
         return match_links
 
-    def process_match(self, link: dict, upcoming_only: bool = False) -> str | None:
-        """Process a single match and return formatted output."""
+    def process_match(
+        self, link: dict, upcoming_only: bool = False
+    ) -> ProcessMatchResult:
+        """Process a single match and return match metadata."""
         match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
@@ -215,39 +202,21 @@ class ValorantClient(CircuitBreakerMixin):
                 cached_data = self.cache.get(match_url)
                 if cached_data:
                     cached_match = Match(**cached_data)
-                    # Don't use cache for live matches (need fresh data)
-                    # Also don't use cache for matches that were previously upcoming
-                    # (they may have completed since caching)
-                    if not cached_match.is_live and not cached_match.is_upcoming:
-                        return self._format_match_output(cached_match)
+                    if should_use_cached_match(cached_match):
+                        return ProcessMatchResult(match=cached_match, cache_hit=True)
 
             soup = self._make_request(match_url)
             if not soup:
-                return None
+                return ProcessMatchResult()
 
-            teams, score, is_live = extract_match_data(soup)
-            if "TBD" in teams:
-                return None
-
-            match_date, match_time = extract_date_time(soup)
-
-            # Determine if this is an upcoming match
-            is_upcoming = is_upcoming_match(score)
+            result = build_match_from_soup(soup, match_url)
+            if result.is_tbd or not result.match:
+                return result
+            match = result.match
 
             # If filtering for upcoming only, skip completed matches
-            if upcoming_only and not is_upcoming and not is_live:
-                return None
-
-            match = Match(
-                date=match_date,
-                time=match_time,
-                team1=teams[0],
-                team2=teams[1],
-                score=score,
-                is_live=bool(is_live),
-                url=match_url,
-                is_upcoming=is_upcoming,
-            )
+            if upcoming_only and not match.is_upcoming and not match.is_live:
+                return ProcessMatchResult()
 
             # Cache only completed matches (not live or upcoming)
             # This ensures transitioning matches get fresh data
@@ -258,23 +227,23 @@ class ValorantClient(CircuitBreakerMixin):
                 # (in case they were previously cached as completed incorrectly)
                 self.cache.invalidate(match_url)
 
-            return self._format_match_output(match)
+            return result
 
         except RequestException as e:
             logger.error(f"Network error processing match {match_url}: {e}")
-            return None
+            return ProcessMatchResult()
         except (AttributeError, TypeError, IndexError) as e:
             logger.error(f"HTML parsing error for match {match_url}: {e}")
-            return None
+            return ProcessMatchResult()
         except (KeyError, ValueError) as e:
             logger.error(f"Data extraction error for match {match_url}: {e}")
-            return None
+            return ProcessMatchResult()
         except Exception as e:
             # Keep a catch-all but log full traceback for debugging
             logger.error(
                 f"Unexpected error processing match {match_url}: {e}", exc_info=True
             )
-            return None
+            return ProcessMatchResult()
 
     def _format_match_output(self, match: Match) -> str:
         """Format match data for display."""

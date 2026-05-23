@@ -24,7 +24,7 @@ def get_event_for_region(
         elif view_mode == "upcoming":
             status_priority = {"upcoming": 0, "ongoing": 1, "completed": 2}
         else:
-            status_priority = {"ongoing": 0, "upcoming": 1, "completed": 2}
+            status_priority = {"ongoing": 0, "completed": 1, "upcoming": 2}
 
         def event_id_key(event: DiscoveredEvent) -> int:
             try:

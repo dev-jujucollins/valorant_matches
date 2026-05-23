@@ -62,6 +62,34 @@ class Match:
     is_upcoming: bool = False
 
 
+@dataclass
+class ProcessMatchResult:
+    """Result metadata for one processed match."""
+
+    match: Match | None = None
+    is_tbd: bool = False
+    cache_hit: bool = False
+
+
+@dataclass
+class ProcessedMatches:
+    """Batch result metadata for processed matches."""
+
+    results: list[tuple[dict, Match]]
+    tbd_count: int = 0
+    cache_hits: int = 0
+    failed_count: int = 0
+
+    def __iter__(self):
+        """Allow legacy unpacking as (results, tbd_count)."""
+        yield self.results
+        yield self.tbd_count
+
+    def __len__(self) -> int:
+        """Return displayed result count for legacy len() calls."""
+        return len(self.results)
+
+
 class CircuitBreakerOpen(Exception):
     """Raised when the circuit breaker is open and requests are blocked."""
 
@@ -184,6 +212,57 @@ def extract_match_data(soup: BeautifulSoup) -> tuple[list[str], str, bool]:
     score = extract_score(soup)
     is_live = extract_live_status(soup)
     return teams, score, is_live
+
+
+def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchResult:
+    """Build a Match object from a match page."""
+    teams, score, is_live = extract_match_data(soup)
+    if "TBD" in teams:
+        return ProcessMatchResult(is_tbd=True)
+
+    match_date, match_time = extract_date_time(soup)
+    is_upcoming = is_upcoming_match(score)
+    return ProcessMatchResult(
+        match=Match(
+            date=match_date,
+            time=match_time,
+            team1=teams[0],
+            team2=teams[1],
+            score=score,
+            is_live=bool(is_live),
+            url=match_url,
+            is_upcoming=is_upcoming,
+        )
+    )
+
+
+def should_use_cached_match(match: Match) -> bool:
+    """Return True when cached match data is safe to display."""
+    return not match.is_live and not match.is_upcoming
+
+
+def extract_event_slug(event_url: str) -> str | None:
+    """Extract event slug from a VLR event matches URL."""
+    slug_match = EVENT_SLUG_PATTERN.search(event_url)
+    if slug_match:
+        return slug_match.group(1)
+    return None
+
+
+def find_event_match_links(
+    soup: BeautifulSoup,
+    slug_pattern: re.Pattern | None = None,
+) -> list[dict]:
+    """Find match links for an event page."""
+    match_links = []
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if not MATCH_URL_PATTERN.match(href):
+            continue
+        if slug_pattern and not slug_pattern.search(href.lower()):
+            continue
+        match_links.append(link)
+    return match_links
 
 
 def format_eta(score: str) -> str:

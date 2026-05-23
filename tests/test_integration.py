@@ -10,6 +10,8 @@ from match_extractor import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     CircuitBreakerOpen,
+    Match,
+    ProcessMatchResult,
 )
 from valorant_client import ValorantClient
 
@@ -228,7 +230,17 @@ class TestConcurrentProcessing:
             call_count[0] += 1
             if call_count[0] == 2:
                 raise ValueError("Simulated failure")
-            return f"Result for {link['href']}"
+            return ProcessMatchResult(
+                match=Match(
+                    date="Jan 1",
+                    time="12:00",
+                    team1="Team A",
+                    team2="Team B",
+                    score="2-0",
+                    is_live=False,
+                    url=f"https://vlr.gg{link['href']}",
+                )
+            )
 
         # Patch the AsyncValorantClient's process_match method since process_matches uses async
         with patch(
@@ -236,10 +248,11 @@ class TestConcurrentProcessing:
             side_effect=mock_process_match,
         ):
             # This should not raise despite the exception
-            results = process_matches(client, mock_links, "all")
+            processed = process_matches(client, mock_links, "all")
 
             # Should have 2 results (first and third succeeded)
-            assert len(results) == 2
+            assert len(processed.results) == 2
+            assert processed.failed_count == 1
 
 
 class TestCacheHashAlgorithm:
@@ -312,8 +325,9 @@ class TestExceptionHandling:
             client = ValorantClient()
             result = client.process_match({"href": "/123/test-match"})
 
-            # Should return None, not raise
-            assert result is None
+            # Should return empty result, not raise
+            assert result.match is None
+            assert result.is_tbd is False
 
     def test_process_match_handles_attribute_error(self):
         """Test that process_match handles AttributeError from malformed HTML."""
@@ -332,5 +346,6 @@ class TestExceptionHandling:
 
                 result = client.process_match({"href": "/123/test-match"})
 
-                # Should return None, not raise
-                assert result is None
+                # Should return empty result, not raise
+                assert result.match is None
+                assert result.is_tbd is False

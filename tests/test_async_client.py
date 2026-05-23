@@ -179,9 +179,9 @@ class TestProcessMatchesAsync:
     async def test_empty_match_links(self):
         """Test with empty match links list."""
         async with AsyncValorantClient(cache_enabled=False) as client:
-            results, tbd_count = await process_matches_async(client, [])
-            assert results == []
-            assert tbd_count == 0
+            processed = await process_matches_async(client, [])
+            assert processed.results == []
+            assert processed.tbd_count == 0
 
     @pytest.mark.asyncio
     async def test_progress_callback_called(self):
@@ -236,7 +236,7 @@ class TestProcessMatchesAsync:
         async with AsyncValorantClient(cache_enabled=False) as client:
             client.process_match = mock_process_match  # type: ignore[method-assign]
 
-            results, tbd_count = await process_matches_async(client, mock_links)
+            processed = await process_matches_async(client, mock_links)
 
             # All should start at roughly the same time (concurrent)
             assert len(processing_times) == 3
@@ -244,8 +244,8 @@ class TestProcessMatchesAsync:
             assert max(processing_times) - min(processing_times) < 0.05
 
             # Should have results for all matches
-            assert len(results) == 3
-            assert tbd_count == 0
+            assert len(processed.results) == 3
+            assert processed.tbd_count == 0
 
     @pytest.mark.asyncio
     async def test_results_sorted_by_original_order(self):
@@ -274,12 +274,12 @@ class TestProcessMatchesAsync:
         async with AsyncValorantClient(cache_enabled=False) as client:
             client.process_match = mock_process_match  # type: ignore[method-assign]
 
-            results, _tbd_count = await process_matches_async(client, mock_links)
+            processed = await process_matches_async(client, mock_links)
 
             # Results should be in original order, not completion order
-            assert results[0][0]["href"] == "/1/match1"
-            assert results[1][0]["href"] == "/2/match2"
-            assert results[2][0]["href"] == "/3/match3"
+            assert processed.results[0][0]["href"] == "/1/match1"
+            assert processed.results[1][0]["href"] == "/2/match2"
+            assert processed.results[2][0]["href"] == "/3/match3"
 
     @pytest.mark.asyncio
     async def test_view_mode_results_filters_upcoming(self):
@@ -316,13 +316,13 @@ class TestProcessMatchesAsync:
         async with AsyncValorantClient(cache_enabled=False) as client:
             client.process_match = mock_process_match  # type: ignore[method-assign]
 
-            results, _tbd_count = await process_matches_async(
+            processed = await process_matches_async(
                 client, mock_links, view_mode="results"
             )
 
             # Only completed match should be in results
-            assert len(results) == 1
-            assert "completed" in results[0][0]["href"]
+            assert len(processed.results) == 1
+            assert "completed" in processed.results[0][0]["href"]
 
     @pytest.mark.asyncio
     async def test_exception_handling(self):
@@ -351,11 +351,11 @@ class TestProcessMatchesAsync:
             client.process_match = mock_process_match  # type: ignore[method-assign]
 
             # Should not raise, exceptions are caught
-            results, _tbd_count = await process_matches_async(client, mock_links)
+            processed = await process_matches_async(client, mock_links)
 
             # Only the successful match should be in results
-            assert len(results) == 1
-            assert "good" in results[0][0]["href"]
+            assert len(processed.results) == 1
+            assert "good" in processed.results[0][0]["href"]
 
     @pytest.mark.asyncio
     async def test_tbd_matches_counted_separately(self):
@@ -387,12 +387,12 @@ class TestProcessMatchesAsync:
         async with AsyncValorantClient(cache_enabled=False) as client:
             client.process_match = mock_process_match  # type: ignore[method-assign]
 
-            results, tbd_count = await process_matches_async(client, mock_links)
+            processed = await process_matches_async(client, mock_links)
 
             # Should have 1 successful match
-            assert len(results) == 1
+            assert len(processed.results) == 1
             # Should have counted 2 TBD matches
-            assert tbd_count == 2
+            assert processed.tbd_count == 2
 
 
 class TestCircuitBreaker:

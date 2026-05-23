@@ -4,17 +4,21 @@ import argparse
 import asyncio
 import logging
 import logging.config
+import shutil
 import sys
 import tempfile
+from pathlib import Path
 
 from rich.progress import Progress
 
 from async_client import AsyncValorantClient, process_matches_async
 from cli_mode import run_cli_mode
 from config import CACHE_DIR, EVENTS, LOGGING_CONFIG
+from config_profile import UserProfile, config_manager
 from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
 from formatter import Formatter
 from interactive import run_interactive_mode
+from match_extractor import ProcessedMatches
 from valorant_client import ValorantClient
 
 # Configure logging
@@ -43,6 +47,9 @@ Examples:
   {CLI_COMMAND} --region champions --no-cache  # Force fresh data
   {CLI_COMMAND} --list-regions           # List available regions (auto-discovered)
   {CLI_COMMAND} --refresh                # Force refresh event discovery
+  {CLI_COMMAND} --interactive -r americas # Fetch region, then open interactive mode
+  {CLI_COMMAND} config set default-region americas
+  {CLI_COMMAND} completion install zsh
 
 Available regions:
   americas (am)    - VCT Americas
@@ -53,6 +60,51 @@ Available regions:
   masters          - Valorant Masters
         """,
     )
+    subparsers = parser.add_subparsers(dest="command")
+
+    config_parser = subparsers.add_parser("config", help="Manage saved defaults")
+    config_subparsers = config_parser.add_subparsers(dest="config_command")
+    config_subparsers.required = True
+
+    config_set = config_subparsers.add_parser("set", help="Set a saved default")
+    config_set.add_argument(
+        "key",
+        choices=[
+            "default-region",
+            "default-view",
+            "compact",
+            "sort",
+            "group-by",
+            "cache",
+        ],
+    )
+    config_set.add_argument("value")
+
+    config_get = config_subparsers.add_parser("get", help="Show saved config")
+    config_get.add_argument("key", nargs="?")
+
+    config_favorites = config_subparsers.add_parser(
+        "favorite", help="Manage favorite teams"
+    )
+    config_favorites.add_argument("action", choices=["add", "remove", "list"])
+    config_favorites.add_argument("team", nargs="?")
+
+    config_subparsers.add_parser("reset", help="Reset saved config")
+
+    completion_parser = subparsers.add_parser(
+        "completion", help="Print or install shell completion"
+    )
+    completion_subparsers = completion_parser.add_subparsers(dest="completion_command")
+    completion_subparsers.required = True
+    completion_print = completion_subparsers.add_parser(
+        "print", help="Print completion script"
+    )
+    completion_print.add_argument("shell", choices=["bash", "zsh", "fish"])
+    completion_install = completion_subparsers.add_parser(
+        "install", help="Install completion script"
+    )
+    completion_install.add_argument("shell", choices=["bash", "zsh", "fish"])
+
     parser.add_argument(
         "-r",
         "--region",
@@ -136,12 +188,19 @@ Available regions:
         choices=["bash", "zsh", "fish"],
         help="Print shell completion script for bash, zsh, or fish",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Enter interactive mode after CLI results",
+    )
     return parser.parse_args()
 
 
 def get_completion_script(shell: str) -> str:
     """Generate shell completion script for supported shells."""
     options = [
+        "config",
+        "completion",
         "-r",
         "--region",
         "--upcoming",
@@ -159,6 +218,7 @@ def get_completion_script(shell: str) -> str:
         "--doctor",
         "--quickstart",
         "--print-completion",
+        "--interactive",
         "--help",
     ]
     words = " ".join(options)
@@ -209,6 +269,164 @@ compdef _valorant_matches_completions {CLI_COMMAND}
 end
 complete -c {CLI_COMMAND} -a "(__valorant_matches_complete)"
 """
+
+
+def _parse_bool(value: str) -> bool:
+    """Parse a user-facing boolean config value."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("expected one of: true, false, yes, no, on, off")
+
+
+def _format_profile(profile: UserProfile) -> str:
+    """Format saved profile for display."""
+    favorites = ", ".join(profile.favorite_teams) or "(none)"
+    return "\n".join(
+        [
+            f"default-region: {profile.default_region or '(none)'}",
+            f"default-view: {profile.default_view_mode}",
+            f"compact: {profile.compact_mode}",
+            f"sort: {profile.default_sort or '(none)'}",
+            f"group-by: {profile.default_group_by or '(none)'}",
+            f"cache: {profile.cache_enabled}",
+            f"favorite-teams: {favorites}",
+        ]
+    )
+
+
+CONFIG_KEY_TO_FIELD = {
+    "default-region": "default_region",
+    "default-view": "default_view_mode",
+    "compact": "compact_mode",
+    "sort": "default_sort",
+    "group-by": "default_group_by",
+    "cache": "cache_enabled",
+}
+
+
+def run_config_command(args: argparse.Namespace, formatter: Formatter) -> int:
+    """Run config subcommands."""
+    profile = config_manager.load()
+
+    if args.config_command == "get":
+        if args.key:
+            requested_key = str(args.key)
+            key = CONFIG_KEY_TO_FIELD.get(
+                requested_key, requested_key.replace("-", "_")
+            )
+            if not hasattr(profile, key):
+                print(f"{formatter.error(f'Unknown config key: {args.key}')}")
+                return 1
+            print(getattr(profile, key))
+        else:
+            print(_format_profile(profile))
+        return 0
+
+    if args.config_command == "reset":
+        config_manager.reset()
+        print(f"{formatter.success('Config reset.')}")
+        return 0
+
+    if args.config_command == "favorite":
+        if args.action == "list":
+            print(", ".join(profile.favorite_teams) or "(none)")
+            return 0
+        if not args.team:
+            print(f"{formatter.error('Team name required.')}")
+            return 1
+        if args.action == "add":
+            profile.add_favorite_team(args.team)
+            config_manager.save(profile)
+            print(f"{formatter.success(f'Added favorite team: {args.team}')}")
+            return 0
+        removed = profile.remove_favorite_team(args.team)
+        config_manager.save(profile)
+        if removed:
+            print(f"{formatter.success(f'Removed favorite team: {args.team}')}")
+        else:
+            print(f"{formatter.warning(f'Favorite team not found: {args.team}')}")
+        return 0
+
+    key = args.key
+    value = args.value
+    try:
+        if key == "default-region":
+            if value not in REGION_CHOICES:
+                print(f"{formatter.error(f'Unknown region: {value}')}")
+                print(f"{formatter.muted('Run --list-regions to see valid choices.')}")
+                return 1
+            profile.default_region = value
+        elif key == "default-view":
+            if value not in {"all", "upcoming", "results"}:
+                print(
+                    f"{formatter.error('default-view must be all, upcoming, or results')}"
+                )
+                return 1
+            profile.default_view_mode = value
+        elif key == "compact":
+            profile.compact_mode = _parse_bool(value)
+        elif key == "sort":
+            profile.default_sort = None if value == "none" else value
+            if profile.default_sort not in {None, "date", "team"}:
+                print(f"{formatter.error('sort must be date, team, or none')}")
+                return 1
+        elif key == "group-by":
+            profile.default_group_by = None if value == "none" else value
+            if profile.default_group_by not in {None, "date", "status"}:
+                print(f"{formatter.error('group-by must be date, status, or none')}")
+                return 1
+        elif key == "cache":
+            profile.cache_enabled = _parse_bool(value)
+    except ValueError as e:
+        print(f"{formatter.error(str(e))}")
+        return 1
+
+    config_manager.save(profile)
+    print(f"{formatter.success(f'Set {key} = {value}')}")
+    return 0
+
+
+def _completion_install_path(shell: str) -> Path:
+    """Return install path for a shell completion script."""
+    if shell == "zsh":
+        return Path.home() / ".zfunc" / f"_{CLI_COMMAND}"
+    if shell == "fish":
+        return Path.home() / ".config" / "fish" / "completions" / f"{CLI_COMMAND}.fish"
+    return (
+        Path.home()
+        / ".local"
+        / "share"
+        / "bash-completion"
+        / "completions"
+        / CLI_COMMAND
+    )
+
+
+def install_completion(shell: str) -> Path:
+    """Install shell completion and return written path."""
+    path = _completion_install_path(shell)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(get_completion_script(shell), encoding="utf-8")
+    return path
+
+
+def run_completion_command(args: argparse.Namespace, formatter: Formatter) -> int:
+    """Run completion subcommands."""
+    if args.completion_command == "print":
+        print(get_completion_script(args.shell))
+        return 0
+    if not shutil.which(args.shell):
+        print(
+            f"{formatter.warning(f'{args.shell} not found on PATH; installing anyway.')}"
+        )
+    path = install_completion(args.shell)
+    print(f"{formatter.success(f'Installed {args.shell} completion: {path}')}")
+    if args.shell == "zsh":
+        print(f"{formatter.muted('Ensure ~/.zfunc is in fpath, then restart shell.')}")
+    return 0
 
 
 def print_quickstart(formatter: Formatter) -> None:
@@ -280,11 +498,11 @@ async def process_matches_with_progress(
     client: AsyncValorantClient,
     match_links: list[dict],
     view_mode: str = "all",
-) -> tuple[list[tuple], int]:
+) -> ProcessedMatches:
     """Process matches asynchronously with progress display.
 
     Returns:
-        Tuple of (results, tbd_count).
+        ProcessedMatches with result metadata.
     """
     task_label = {
         "all": "Fetching all matches...",
@@ -301,23 +519,23 @@ async def process_matches_with_progress(
         def update_progress():
             progress.update(task, advance=1)
 
-        results, tbd_count = await process_matches_async(
+        processed = await process_matches_async(
             client, match_links, view_mode, progress_callback=update_progress
         )
 
     print("")
-    return results, tbd_count
+    return processed
 
 
 def process_matches(
     client: ValorantClient,
     match_links: list[dict],
     view_mode: str = "all",
-) -> tuple[list[tuple], int]:
+) -> ProcessedMatches:
     """Process matches using async client (sync wrapper for backward compatibility).
 
     Returns:
-        Tuple of (results, tbd_count).
+        Tuple of (results, tbd_count, cache_hits).
     """
 
     async def _run():
@@ -336,12 +554,42 @@ def _run_interactive(formatter: Formatter, discovery: EventDiscovery) -> int:
     return run_interactive_mode(formatter, discovery, process_matches)
 
 
+def apply_profile_defaults(args: argparse.Namespace, profile: UserProfile) -> None:
+    """Apply saved defaults when equivalent CLI flags are absent."""
+    if not args.region and profile.default_region:
+        args.region = profile.default_region
+
+    if not args.upcoming and not args.results:
+        if profile.default_view_mode == "upcoming":
+            args.upcoming = True
+        elif profile.default_view_mode == "results":
+            args.results = True
+
+    if not getattr(args, "compact", False):
+        args.compact = profile.compact_mode
+
+    if getattr(args, "sort", None) is None:
+        args.sort = profile.default_sort
+
+    if getattr(args, "group_by", None) is None:
+        args.group_by = profile.default_group_by
+
+    if not getattr(args, "no_cache", False):
+        args.no_cache = not profile.cache_enabled
+
+
 def main() -> None:
     logger.info("Starting Valorant Matches application")
     args = parse_args()
 
     # Create a formatter instance for main application
     formatter = Formatter()
+
+    if args.command == "config":
+        sys.exit(run_config_command(args, formatter))
+
+    if args.command == "completion":
+        sys.exit(run_completion_command(args, formatter))
 
     # Handle special commands first
     if args.quickstart:
@@ -363,6 +611,8 @@ def main() -> None:
     # Initialize event discovery
     discovery = EventDiscovery()
     force_refresh = getattr(args, "refresh", False)
+    profile = config_manager.load()
+    apply_profile_defaults(args, profile)
 
     if args.doctor:
         exit_code = run_doctor(formatter, discovery)

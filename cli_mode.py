@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, cast
 
 from event_discovery import EventDiscovery
 from event_manager import get_event_for_region
@@ -85,6 +86,28 @@ class DisplayOptions:
     compact: bool = False
     group_by: str | None = None
     sort_by: str | None = None
+
+
+def _normalize_processed_matches(
+    processed: Any,
+) -> tuple[list[tuple[dict, Match]], int, int]:
+    """Normalize old and new process result shapes."""
+    if hasattr(processed, "results"):
+        return processed.results, processed.tbd_count, processed.cache_hits
+
+    if isinstance(processed, tuple):
+        if len(processed) == 3:
+            results, tbd_count, cache_hits = processed
+            return (
+                cast(list[tuple[dict, Match]], results),
+                cast(int, tbd_count),
+                cast(int, cache_hits),
+            )
+        if len(processed) == 2:
+            results, tbd_count = processed
+            return cast(list[tuple[dict, Match]], results), cast(int, tbd_count), 0
+
+    return cast(list[tuple[dict, Match]], processed), 0, 0
 
 
 def get_match_status(match: Match) -> str:
@@ -260,14 +283,14 @@ def run_cli_mode(
     process_matches_func,
     run_interactive_func,
 ) -> int:
-    """Run in CLI mode with command line arguments, then transition to interactive.
+    """Run in CLI mode with command line arguments.
 
     Args:
         args: Parsed command line arguments
         formatter: Formatter instance for output styling
         discovery: EventDiscovery instance
         process_matches_func: Function to process matches (injected to avoid circular import)
-        run_interactive_func: Function to run interactive mode (injected to avoid circular import)
+        run_interactive_func: Function to run interactive mode if requested
     """
     import time
 
@@ -310,8 +333,10 @@ def run_cli_mode(
         return 0
 
     stats.total = len(match_links)
-    results, tbd_count = process_matches_func(client, match_links, view_mode)
+    processed = process_matches_func(client, match_links, view_mode)
+    results, tbd_count, cache_hits = _normalize_processed_matches(processed)
     stats.tbd_count = tbd_count
+    stats.cache_hits = cache_hits
 
     # Apply team filter if specified
     team_filter = getattr(args, "team", None)
@@ -386,7 +411,8 @@ def run_cli_mode(
     # Print error summary if there were errors
     print_error_summary(formatter, stats)
 
-    # Transition to interactive mode
-    print(f"\n{formatter.muted('─' * 40)}")
-    print(f"{formatter.info('Entering interactive mode...', bold=True)}\n")
-    return run_interactive_func(formatter, discovery)
+    if getattr(args, "interactive", False):
+        print(f"\n{formatter.muted('─' * 40)}")
+        print(f"{formatter.info('Entering interactive mode...', bold=True)}\n")
+        return run_interactive_func(formatter, discovery)
+    return 0
