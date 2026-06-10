@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from cache import MatchCache
+from valorant_matches.cache import MatchCache
 
 
 @pytest.fixture
@@ -161,3 +161,23 @@ class TestMatchCache:
         """Test that invalidate returns False when cache is disabled."""
         result = disabled_cache.invalidate("https://vlr.gg/match/12345")
         assert result is False
+
+    def test_cache_discards_mismatched_schema_version(self, cache, temp_cache_dir):
+        """Entries written under an old schema version are treated as misses."""
+        import json
+        import time as time_module
+
+        url = "https://vlr.gg/match/12345"
+        key = cache._get_cache_key(url)
+        cache_path = temp_cache_dir / f"{key}.json"
+
+        # Simulate an entry from before schema versioning (no "version" key)
+        cache_path.write_text(
+            json.dumps(
+                {"url": url, "timestamp": time_module.time(), "data": {"stale": True}}
+            )
+        )
+
+        assert cache.get(url) is None
+        # Stale file should be deleted
+        assert not cache_path.exists()

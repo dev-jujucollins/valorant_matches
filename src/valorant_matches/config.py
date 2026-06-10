@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Application home for config, cache, and logs (independent of CWD)
+APP_DIR = Path(os.getenv("VALORANT_MATCHES_HOME", Path.home() / ".valorant-matches"))
+LOG_FILE = APP_DIR / "valorant_matches.log"
+
 
 def get_env_bool(key: str, default: bool = False) -> bool:
     """Get a boolean value from environment variable."""
@@ -53,9 +57,11 @@ LOGGING_CONFIG = {
         },
         "file": {
             "class": "logging.FileHandler",
-            "filename": "valorant_matches.log",
+            "filename": str(LOG_FILE),
             "formatter": "standard",
             "level": "DEBUG",
+            # Open lazily so importing this module never touches the filesystem
+            "delay": True,
         },
     },
     "loggers": {
@@ -78,7 +84,7 @@ MAX_WORKERS = get_env_int("MAX_WORKERS", 10)
 CACHE_ENABLED = get_env_bool("CACHE_ENABLED", True)
 # 1 hour TTL for completed matches (they don't change)
 CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 3600)
-CACHE_DIR = Path(os.getenv("CACHE_DIR", ".cache"))
+CACHE_DIR = Path(os.getenv("CACHE_DIR", APP_DIR / "cache"))
 
 # Rate limiting settings
 RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "0.5"))

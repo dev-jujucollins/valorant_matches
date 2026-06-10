@@ -16,7 +16,13 @@ from requests.exceptions import (
     Timeout,
 )
 
-from config import BASE_URL, HEADERS, MAX_RETRIES, REQUEST_TIMEOUT, RETRY_DELAY
+from valorant_matches.config import (
+    BASE_URL,
+    HEADERS,
+    MAX_RETRIES,
+    REQUEST_TIMEOUT,
+    RETRY_DELAY,
+)
 
 logger = logging.getLogger("valorant_matches")
 

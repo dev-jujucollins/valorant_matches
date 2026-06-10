@@ -82,7 +82,7 @@ If you only want dependency install without package entry points:
 
 ```bash
 pip install -r requirements.txt
-python main.py
+PYTHONPATH=src python -m valorant_matches.main
 ```
 
 ## Usage
@@ -206,35 +206,29 @@ Available options:
 
 ```
 valorant_matches/
-├── main.py              # Application entry point and CLI argument parsing
-├── valorant_client.py   # Synchronous match fetching and processing
-├── async_client.py      # Async match fetching with rate limiting
-├── event_discovery.py   # Auto-discovers VCT events from vlr.gg
-├── event_manager.py     # Event selection and region mapping
-├── cli_mode.py          # CLI mode logic and display options
-├── interactive.py       # Interactive mode with keyboard shortcuts
-├── match_extractor.py   # HTML parsing and data extraction
-├── exporters.py         # JSON/CSV export functionality
-├── config.py            # Configuration and constants
-├── formatter.py         # Rich-based terminal formatting
-├── cache.py             # Match data caching with TTL
+├── src/valorant_matches/
+│   ├── main.py              # Application entry point and CLI argument parsing
+│   ├── runner.py            # Sync entry point driving the async client
+│   ├── async_client.py      # Async match fetching with rate limiting
+│   ├── event_discovery.py   # Auto-discovers VCT events from vlr.gg
+│   ├── event_manager.py     # Event selection and region mapping
+│   ├── cli_mode.py          # CLI mode logic and display options
+│   ├── interactive.py       # Interactive mode with keyboard shortcuts
+│   ├── match_extractor.py   # HTML parsing and data extraction
+│   ├── exporters.py         # JSON/CSV export functionality
+│   ├── config.py            # Configuration and constants
+│   ├── config_profile.py    # Saved user defaults (~/.valorant-matches)
+│   ├── formatter.py         # Rich-based terminal formatting
+│   └── cache.py             # Match data caching with TTL
 ├── tests/               # Test suite
-│   ├── test_async_client.py
-│   ├── test_cache.py
-│   ├── test_cli_mode.py
-│   ├── test_config.py
-│   ├── test_event_discovery.py
-│   ├── test_event_manager.py
-│   ├── test_exporters.py
-│   ├── test_formatter.py
-│   ├── test_integration.py
-│   ├── test_main.py
-│   ├── test_match_extractor.py
-│   └── test_valorant_client.py
 ├── pyproject.toml       # Project metadata and dependencies
 ├── requirements.txt     # Legacy pip dependencies
 └── .env.example         # Configuration template
 ```
+
+Logs and the match cache live in `~/.valorant-matches/` (override with
+`VALORANT_MATCHES_HOME` or `CACHE_DIR`), so running the CLI never litters
+the current directory.
 
 ## Testing
 

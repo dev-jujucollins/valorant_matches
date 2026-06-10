@@ -3,7 +3,7 @@
 import argparse
 from unittest.mock import Mock, patch
 
-from cli_mode import (
+from valorant_matches.cli_mode import (
     DisplayOptions,
     MatchStats,
     filter_matches_by_team,
@@ -14,7 +14,8 @@ from cli_mode import (
     run_cli_mode,
     sort_matches,
 )
-from match_extractor import Match, ProcessedMatches
+from valorant_matches.match_extractor import Match, ProcessedMatches
+from valorant_matches.runner import EventFetchResult
 
 
 def make_match(
@@ -320,57 +321,70 @@ class TestFilterMatchesByTeam:
         assert len(filtered) == 0
 
 
+def _make_cli_args(**overrides) -> argparse.Namespace:
+    """Build a CLI args namespace with sensible defaults."""
+    values = {
+        "region": "americas",
+        "no_cache": False,
+        "upcoming": False,
+        "results": False,
+        "refresh": False,
+        "team": None,
+        "export": None,
+        "compact": False,
+        "group_by": None,
+        "sort": None,
+        "interactive": False,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def _make_cli_formatter() -> Mock:
+    formatter = Mock()
+    formatter.info.side_effect = lambda text, bold=False: text
+    formatter.warning.side_effect = lambda text, bold=False: text
+    formatter.error.side_effect = lambda text, bold=False: text
+    formatter.muted.side_effect = lambda text, bold=False: text
+    formatter.print_stats_footer = Mock()
+    return formatter
+
+
+def _make_fetch_result(**overrides) -> EventFetchResult:
+    processed = ProcessedMatches(
+        results=[
+            (
+                {"href": "/1/match"},
+                make_match(team1="Sentinels", team2="Cloud9"),
+            )
+        ],
+        tbd_count=0,
+        cache_hits=1,
+    )
+    defaults = {"total_links": 1, "processed": processed}
+    defaults.update(overrides)
+    return EventFetchResult(**defaults)
+
+
 class TestRunCliMode:
     """Tests for CLI mode flow."""
 
     def test_cli_mode_exits_after_results_by_default(self):
         """CLI mode should not enter interactive mode unless requested."""
-        formatter = Mock()
-        formatter.info.side_effect = lambda text, bold=False: text
-        formatter.warning.side_effect = lambda text, bold=False: text
-        formatter.error.side_effect = lambda text, bold=False: text
-        formatter.muted.side_effect = lambda text, bold=False: text
-        formatter.print_stats_footer = Mock()
-
+        formatter = _make_cli_formatter()
         event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
         event.slug = "vct-americas"
-        client = Mock()
-        client.fetch_event_matches.return_value = [{"href": "/1/match"}]
-
-        args = argparse.Namespace(
-            region="americas",
-            no_cache=False,
-            upcoming=False,
-            results=False,
-            refresh=False,
-            team=None,
-            export=None,
-            compact=False,
-            group_by=None,
-            sort=None,
-            interactive=False,
-        )
-
-        processed = ProcessedMatches(
-            results=[
-                (
-                    {"href": "/1/match"},
-                    make_match(team1="Sentinels", team2="Cloud9"),
-                )
-            ],
-            tbd_count=0,
-            cache_hits=1,
-        )
-        process_matches = Mock(return_value=processed)
+        args = _make_cli_args()
         run_interactive = Mock(return_value=0)
 
         with (
-            patch("cli_mode.ValorantClient", return_value=client),
-            patch("cli_mode.get_event_for_region", return_value=event),
+            patch(
+                "valorant_matches.cli_mode.fetch_event_data",
+                return_value=_make_fetch_result(),
+            ),
+            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
         ):
-            exit_code = run_cli_mode(
-                args, formatter, Mock(), process_matches, run_interactive
-            )
+            exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
 
         assert exit_code == 0
         run_interactive.assert_not_called()
@@ -378,51 +392,79 @@ class TestRunCliMode:
 
     def test_cli_mode_enters_interactive_when_requested(self):
         """--interactive should opt into post-results interactive mode."""
-        formatter = Mock()
-        formatter.info.side_effect = lambda text, bold=False: text
-        formatter.warning.side_effect = lambda text, bold=False: text
-        formatter.error.side_effect = lambda text, bold=False: text
-        formatter.muted.side_effect = lambda text, bold=False: text
-        formatter.print_stats_footer = Mock()
-
+        formatter = _make_cli_formatter()
         event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
         event.slug = "vct-americas"
-        client = Mock()
-        client.fetch_event_matches.return_value = [{"href": "/1/match"}]
-
-        args = argparse.Namespace(
-            region="americas",
-            no_cache=False,
-            upcoming=False,
-            results=False,
-            refresh=False,
-            team=None,
-            export=None,
-            compact=False,
-            group_by=None,
-            sort=None,
-            interactive=True,
-        )
-
-        process_matches = Mock(
-            return_value=ProcessedMatches(
-                results=[
-                    (
-                        {"href": "/1/match"},
-                        make_match(team1="Sentinels", team2="Cloud9"),
-                    )
-                ]
-            )
-        )
+        args = _make_cli_args(interactive=True)
         run_interactive = Mock(return_value=7)
 
         with (
-            patch("cli_mode.ValorantClient", return_value=client),
-            patch("cli_mode.get_event_for_region", return_value=event),
+            patch(
+                "valorant_matches.cli_mode.fetch_event_data",
+                return_value=_make_fetch_result(),
+            ),
+            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
         ):
-            exit_code = run_cli_mode(
-                args, formatter, Mock(), process_matches, run_interactive
-            )
+            exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
 
         assert exit_code == 7
         run_interactive.assert_called_once()
+
+    def test_cli_mode_reports_failed_count_from_processing(self):
+        """Failed stat should come from processing, not be inferred from filters."""
+        formatter = _make_cli_formatter()
+        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
+        event.slug = "vct-americas"
+        # Team filter removes the only result; failed must stay at the real value.
+        args = _make_cli_args(team="Fnatic")
+
+        fetch_result = _make_fetch_result(total_links=3)
+        fetch_result.processed.failed_count = 2
+
+        with (
+            patch(
+                "valorant_matches.cli_mode.fetch_event_data",
+                return_value=fetch_result,
+            ),
+            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
+        ):
+            exit_code = run_cli_mode(args, formatter, Mock(), Mock())
+
+        assert exit_code == 0
+        footer_kwargs = formatter.print_stats_footer.call_args.kwargs
+        assert footer_kwargs["failed"] == 2
+
+
+class TestParseDateYearInference:
+    """Tests for year inference on yearless dates."""
+
+    def _patched_parse(self, date_str: str, fake_today):
+        from datetime import datetime as real_datetime
+
+        from valorant_matches.cli_mode import _parse_date
+
+        class FakeDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fake_today
+
+        with patch("valorant_matches.cli_mode.datetime", FakeDateTime):
+            return _parse_date(date_str)
+
+    def test_january_date_in_december_resolves_to_next_year(self):
+        from datetime import datetime
+
+        parsed = self._patched_parse("Jan 10", datetime(2025, 12, 30))
+        assert parsed.year == 2026
+
+    def test_december_date_in_january_resolves_to_previous_year(self):
+        from datetime import datetime
+
+        parsed = self._patched_parse("Dec 28", datetime(2026, 1, 5))
+        assert parsed.year == 2025
+
+    def test_same_season_date_keeps_current_year(self):
+        from datetime import datetime
+
+        parsed = self._patched_parse("Jun 15", datetime(2026, 6, 10))
+        assert parsed.year == 2026

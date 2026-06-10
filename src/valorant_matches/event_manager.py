@@ -2,8 +2,12 @@
 
 import logging
 
-from config import EVENTS, REGION_FALLBACK_KEYS
-from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
+from valorant_matches.config import EVENTS, REGION_FALLBACK_KEYS
+from valorant_matches.event_discovery import (
+    REGION_ALIASES,
+    DiscoveredEvent,
+    EventDiscovery,
+)
 
 logger = logging.getLogger("valorant_matches")
 
@@ -42,7 +46,10 @@ def get_event_for_region(
         return ranked[0]
 
     # Fallback to hardcoded config
-    logger.warning(f"No discovered events for {region}, falling back to config")
+    logger.warning(
+        f"No discovered events for '{region}'; falling back to the hardcoded event "
+        "table, which may be outdated. Re-run with --refresh once vlr.gg is reachable."
+    )
 
     # Normalize region and find fallback event
     for canonical, aliases in REGION_ALIASES.items():

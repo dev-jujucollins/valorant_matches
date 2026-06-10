@@ -4,7 +4,7 @@ import time
 import pytest
 from bs4 import BeautifulSoup
 
-from match_extractor import (
+from valorant_matches.match_extractor import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     COUNTDOWN_PATTERN,

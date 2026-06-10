@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
 import argparse
-import asyncio
 import logging
 import logging.config
 import shutil
@@ -9,26 +8,21 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rich.progress import Progress
+from valorant_matches.cli_mode import run_cli_mode
+from valorant_matches.config import APP_DIR, CACHE_DIR, EVENTS, LOGGING_CONFIG
+from valorant_matches.config_profile import UserProfile, config_manager
+from valorant_matches.event_discovery import (
+    REGION_ALIASES,
+    DiscoveredEvent,
+    EventDiscovery,
+)
+from valorant_matches.formatter import Formatter
+from valorant_matches.interactive import run_interactive_mode
 
-from async_client import AsyncValorantClient, process_matches_async
-from cli_mode import run_cli_mode
-from config import CACHE_DIR, EVENTS, LOGGING_CONFIG
-from config_profile import UserProfile, config_manager
-from event_discovery import REGION_ALIASES, DiscoveredEvent, EventDiscovery
-from formatter import Formatter
-from interactive import run_interactive_mode
-from match_extractor import ProcessedMatches
-from valorant_client import ValorantClient
-
-# Configure logging
-logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("valorant_matches")
 
 # Flatten region aliases for argparse choices
-REGION_CHOICES = []
-for aliases in REGION_ALIASES.values():
-    REGION_CHOICES.extend(aliases)
+REGION_CHOICES = [alias for aliases in REGION_ALIASES.values() for alias in aliases]
 
 CLI_COMMAND = "valorant-matches"
 
@@ -369,15 +363,17 @@ def run_config_command(args: argparse.Namespace, formatter: Formatter) -> int:
         elif key == "compact":
             profile.compact_mode = _parse_bool(value)
         elif key == "sort":
-            profile.default_sort = None if value == "none" else value
-            if profile.default_sort not in {None, "date", "team"}:
+            sort_value = None if value == "none" else value
+            if sort_value not in {None, "date", "team"}:
                 print(f"{formatter.error('sort must be date, team, or none')}")
                 return 1
+            profile.default_sort = sort_value
         elif key == "group-by":
-            profile.default_group_by = None if value == "none" else value
-            if profile.default_group_by not in {None, "date", "status"}:
+            group_value = None if value == "none" else value
+            if group_value not in {None, "date", "status"}:
                 print(f"{formatter.error('group-by must be date, status, or none')}")
                 return 1
+            profile.default_group_by = group_value
         elif key == "cache":
             profile.cache_enabled = _parse_bool(value)
     except ValueError as e:
@@ -494,66 +490,6 @@ def run_doctor(formatter: Formatter, discovery: EventDiscovery) -> int:
     return 0
 
 
-async def process_matches_with_progress(
-    client: AsyncValorantClient,
-    match_links: list[dict],
-    view_mode: str = "all",
-) -> ProcessedMatches:
-    """Process matches asynchronously with progress display.
-
-    Returns:
-        ProcessedMatches with result metadata.
-    """
-    task_label = {
-        "all": "Fetching all matches...",
-        "results": "Fetching match results...",
-        "upcoming": "Fetching upcoming matches...",
-    }.get(view_mode, "Fetching matches...")
-
-    with Progress() as progress:
-        task = progress.add_task(
-            f"[bright_magenta] {task_label}",
-            total=len(match_links),
-        )
-
-        def update_progress():
-            progress.update(task, advance=1)
-
-        processed = await process_matches_async(
-            client, match_links, view_mode, progress_callback=update_progress
-        )
-
-    print("")
-    return processed
-
-
-def process_matches(
-    client: ValorantClient,
-    match_links: list[dict],
-    view_mode: str = "all",
-) -> ProcessedMatches:
-    """Process matches using async client (sync wrapper for backward compatibility).
-
-    Returns:
-        Tuple of (results, tbd_count, cache_hits).
-    """
-
-    async def _run():
-        async with AsyncValorantClient(
-            cache_enabled=client._cache_enabled
-        ) as async_client:
-            return await process_matches_with_progress(
-                async_client, match_links, view_mode
-            )
-
-    return asyncio.run(_run())
-
-
-def _run_interactive(formatter: Formatter, discovery: EventDiscovery) -> int:
-    """Wrapper for run_interactive_mode that injects process_matches."""
-    return run_interactive_mode(formatter, discovery, process_matches)
-
-
 def apply_profile_defaults(args: argparse.Namespace, profile: UserProfile) -> None:
     """Apply saved defaults when equivalent CLI flags are absent."""
     if not args.region and profile.default_region:
@@ -579,6 +515,10 @@ def apply_profile_defaults(args: argparse.Namespace, profile: UserProfile) -> No
 
 
 def main() -> None:
+    # Configure logging once, here — library modules only get loggers.
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    logging.config.dictConfig(LOGGING_CONFIG)
+
     logger.info("Starting Valorant Matches application")
     args = parse_args()
 
@@ -601,7 +541,7 @@ def main() -> None:
         sys.exit(0)
 
     if args.clear_cache:
-        from cache import MatchCache
+        from valorant_matches.cache import MatchCache
 
         cache = MatchCache()
         count = cache.clear()
@@ -650,12 +590,10 @@ def main() -> None:
     # Determine mode based on arguments
     if args.region:
         # CLI mode
-        exit_code = run_cli_mode(
-            args, formatter, discovery, process_matches, _run_interactive
-        )
+        exit_code = run_cli_mode(args, formatter, discovery, run_interactive_mode)
     else:
         # Interactive mode
-        exit_code = _run_interactive(formatter, discovery)
+        exit_code = run_interactive_mode(formatter, discovery)
 
     logger.info("Application shutdown complete")
     sys.exit(exit_code)

@@ -5,10 +5,12 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from valorant_matches.config import APP_DIR
+
 logger = logging.getLogger("valorant_matches")
 
 # Default config directory
-CONFIG_DIR = Path.home() / ".valorant-matches"
+CONFIG_DIR = APP_DIR
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 

@@ -2,17 +2,17 @@
 
 import argparse
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
 
-from event_discovery import EventDiscovery
-from event_manager import get_event_for_region
-from exporters import export_matches
-from formatter import Formatter
-from match_extractor import Match
-from valorant_client import ValorantClient
+from valorant_matches.event_discovery import EventDiscovery
+from valorant_matches.event_manager import get_event_for_region
+from valorant_matches.exporters import export_matches
+from valorant_matches.formatter import Formatter
+from valorant_matches.match_extractor import Match
+from valorant_matches.runner import fetch_event_data
 
 logger = logging.getLogger("valorant_matches")
 
@@ -88,28 +88,6 @@ class DisplayOptions:
     sort_by: str | None = None
 
 
-def _normalize_processed_matches(
-    processed: Any,
-) -> tuple[list[tuple[dict, Match]], int, int]:
-    """Normalize old and new process result shapes."""
-    if hasattr(processed, "results"):
-        return processed.results, processed.tbd_count, processed.cache_hits
-
-    if isinstance(processed, tuple):
-        if len(processed) == 3:
-            results, tbd_count, cache_hits = processed
-            return (
-                cast(list[tuple[dict, Match]], results),
-                cast(int, tbd_count),
-                cast(int, cache_hits),
-            )
-        if len(processed) == 2:
-            results, tbd_count = processed
-            return cast(list[tuple[dict, Match]], results), cast(int, tbd_count), 0
-
-    return cast(list[tuple[dict, Match]], processed), 0, 0
-
-
 def get_match_status(match: Match) -> str:
     """Determine match status from Match object."""
     if match.is_live:
@@ -134,12 +112,17 @@ def _parse_date(date_str: str) -> datetime:
     for fmt in formats:
         try:
             parsed = datetime.strptime(date_str, fmt)
-            # For formats without year, use current year
-            if "%Y" not in fmt:
-                parsed = parsed.replace(year=datetime.now().year)
-            return parsed
         except ValueError:
             continue
+        if "%Y" not in fmt:
+            # No year in the source: pick the year that puts the date closest
+            # to today, so a Jan match listed in December sorts as next year.
+            today = datetime.now()
+            candidates = [
+                parsed.replace(year=today.year + offset) for offset in (-1, 0, 1)
+            ]
+            parsed = min(candidates, key=lambda d: abs(d - today))
+        return parsed
     return datetime.max
 
 
@@ -280,7 +263,6 @@ def run_cli_mode(
     args: argparse.Namespace,
     formatter: Formatter,
     discovery: EventDiscovery,
-    process_matches_func,
     run_interactive_func,
 ) -> int:
     """Run in CLI mode with command line arguments.
@@ -289,17 +271,12 @@ def run_cli_mode(
         args: Parsed command line arguments
         formatter: Formatter instance for output styling
         discovery: EventDiscovery instance
-        process_matches_func: Function to process matches (injected to avoid circular import)
         run_interactive_func: Function to run interactive mode if requested
     """
-    import time
-
     start_time = time.time()
     stats = MatchStats()
 
     cache_enabled = not args.no_cache
-    client = ValorantClient(cache_enabled=cache_enabled)
-
     if args.no_cache:
         logger.info("Cache disabled via --no-cache flag")
 
@@ -324,19 +301,25 @@ def run_cli_mode(
         f"\n{formatter.info(f'Fetching matches for: {event.name}{status_str}', bold=True)}\n"
     )
 
-    match_links = client.fetch_event_matches(event.url, event.slug)
-    if not match_links:
+    fetch_result = fetch_event_data(
+        event.url,
+        event.slug,
+        view_mode=view_mode,
+        cache_enabled=cache_enabled,
+    )
+    if not fetch_result.total_links:
         print(f"\n{formatter.warning('No matches found for the selected event page.')}")
         print(
             f"{formatter.muted('The event may not have posted matches yet. Try --refresh or check another region.')}\n"
         )
         return 0
 
-    stats.total = len(match_links)
-    processed = process_matches_func(client, match_links, view_mode)
-    results, tbd_count, cache_hits = _normalize_processed_matches(processed)
-    stats.tbd_count = tbd_count
-    stats.cache_hits = cache_hits
+    processed = fetch_result.processed
+    stats.total = fetch_result.total_links
+    stats.tbd_count = processed.tbd_count
+    stats.cache_hits = processed.cache_hits
+    stats.failed = processed.failed_count
+    results = processed.results
 
     # Apply team filter if specified
     team_filter = getattr(args, "team", None)
@@ -392,11 +375,7 @@ def run_cli_mode(
         options = get_display_options(args)
         display_results(results, formatter, options, stats)
 
-    # Calculate and display stats
     stats.fetch_time = time.time() - start_time
-    if stats.failed == 0:
-        # Failed = total - displayed - TBD
-        stats.failed = stats.total - len(results) - stats.tbd_count
 
     print()
     formatter.print_stats_footer(

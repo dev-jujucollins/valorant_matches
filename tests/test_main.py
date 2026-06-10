@@ -3,9 +3,9 @@
 import sys
 from unittest.mock import Mock, patch
 
-from config_profile import ConfigManager, UserProfile
-from interactive import _suggest_team_names
-from main import (
+from valorant_matches.config_profile import ConfigManager, UserProfile
+from valorant_matches.interactive import _suggest_team_names
+from valorant_matches.main import (
     CLI_COMMAND,
     apply_profile_defaults,
     get_completion_script,
@@ -13,7 +13,7 @@ from main import (
     run_config_command,
     run_doctor,
 )
-from match_extractor import Match
+from valorant_matches.match_extractor import Match
 
 
 def make_match(team1: str, team2: str) -> Match:
@@ -35,26 +35,30 @@ class TestMainArgs:
 
     def test_parse_args_doctor(self):
         """--doctor flag should parse correctly."""
-        with patch.object(sys, "argv", ["main.py", "--doctor"]):
+        with patch.object(sys, "argv", ["valorant_matches.main.py", "--doctor"]):
             args = parse_args()
         assert args.doctor is True
 
     def test_parse_args_quickstart(self):
         """--quickstart flag should parse correctly."""
-        with patch.object(sys, "argv", ["main.py", "--quickstart"]):
+        with patch.object(sys, "argv", ["valorant_matches.main.py", "--quickstart"]):
             args = parse_args()
         assert args.quickstart is True
 
     def test_parse_args_print_completion(self):
         """--print-completion should parse shell choice."""
-        with patch.object(sys, "argv", ["main.py", "--print-completion", "bash"]):
+        with patch.object(
+            sys, "argv", ["valorant_matches.main.py", "--print-completion", "bash"]
+        ):
             args = parse_args()
         assert args.print_completion == "bash"
 
     def test_parse_args_config_set(self):
         """Config subcommand should parse key and value."""
         with patch.object(
-            sys, "argv", ["main.py", "config", "set", "default-region", "americas"]
+            sys,
+            "argv",
+            ["valorant_matches.main.py", "config", "set", "default-region", "americas"],
         ):
             args = parse_args()
         assert args.command == "config"
@@ -64,7 +68,9 @@ class TestMainArgs:
 
     def test_parse_args_completion_install(self):
         """Completion install subcommand should parse shell."""
-        with patch.object(sys, "argv", ["main.py", "completion", "install", "zsh"]):
+        with patch.object(
+            sys, "argv", ["valorant_matches.main.py", "completion", "install", "zsh"]
+        ):
             args = parse_args()
         assert args.command == "completion"
         assert args.completion_command == "install"
@@ -196,7 +202,7 @@ class TestConfigCommand:
         manager = ConfigManager(tmp_path / "config.json")
         args = Mock(config_command="set", key="default-region", value="americas")
 
-        with patch("main.config_manager", manager):
+        with patch("valorant_matches.main.config_manager", manager):
             exit_code = run_config_command(args, formatter)
 
         assert exit_code == 0

@@ -4,19 +4,17 @@ import json
 import logging
 from difflib import get_close_matches
 
-from requests.exceptions import RequestException
-
-from cli_mode import (
+from valorant_matches.cli_mode import (
     filter_matches_by_team,
     format_match_full,
     group_matches,
     sort_matches,
 )
-from config import EVENTS
-from event_discovery import DiscoveredEvent, EventDiscovery
-from formatter import Formatter
-from match_extractor import Match
-from valorant_client import ValorantClient
+from valorant_matches.config import EVENTS
+from valorant_matches.event_discovery import DiscoveredEvent, EventDiscovery
+from valorant_matches.formatter import Formatter
+from valorant_matches.match_extractor import Match
+from valorant_matches.runner import fetch_event_data
 
 logger = logging.getLogger("valorant_matches")
 
@@ -30,6 +28,8 @@ SHORTCUTS = {
     "h": "Show this help",
 }
 
+VIEW_MODE_OPTIONS = {"1": "all", "2": "results", "3": "upcoming"}
+
 
 def print_shortcuts(formatter: Formatter) -> None:
     """Display keyboard shortcuts help."""
@@ -37,6 +37,23 @@ def print_shortcuts(formatter: Formatter) -> None:
     for key, description in SHORTCUTS.items():
         print(f"  {formatter.primary(key)} - {description}")
     print()
+
+
+def select_view_mode(formatter: Formatter) -> str | None:
+    """Show the view mode menu. Returns a view mode, or None for 'back'."""
+    print(f"\n{formatter.info(' View Mode:', bold=True)}")
+    print(f"{formatter.primary('1.', bold=True)} {formatter.highlight('All Matches')}")
+    print(
+        f"{formatter.primary('2.', bold=True)} {formatter.highlight('Results Only')} {formatter.muted('(completed matches)')}"
+    )
+    print(
+        f"{formatter.primary('3.', bold=True)} {formatter.highlight('Upcoming Only')} {formatter.muted('(scheduled matches)')}"
+    )
+    print(f"{formatter.primary('4.', bold=True)} {formatter.muted('Back to Events')}\n")
+    choice = input(f"{formatter.info('Select view mode:', bold=True)} ").strip()
+    if choice == "4":
+        return None
+    return VIEW_MODE_OPTIONS.get(choice, "all")
 
 
 def _print_next_step_hint(formatter: Formatter, hint: str) -> None:
@@ -59,16 +76,13 @@ def _suggest_team_names(
 def run_interactive_mode(
     formatter: Formatter,
     discovery: EventDiscovery,
-    process_matches_func,
 ) -> int:
     """Run in interactive mode with menus.
 
     Args:
         formatter: Formatter instance for output styling
         discovery: EventDiscovery instance
-        process_matches_func: Function to process matches (injected to avoid circular import)
     """
-    client = ValorantClient()
     force_refresh = False
 
     # Current filter/sort/group state
@@ -218,8 +232,13 @@ def run_interactive_mode(
                 )
                 continue
 
-            match_links = client.fetch_event_matches(event.url, event.slug)
-            if not match_links:
+            # Show view mode menu before any network work
+            view_mode = select_view_mode(formatter)
+            if view_mode is None:
+                continue  # Back to events
+
+            fetch_result = fetch_event_data(event.url, event.slug, view_mode)
+            if not fetch_result.total_links:
                 logger.warning("No matches found for selected event")
                 print(
                     f"\n{formatter.warning('No matches were found for this event page yet.')}"
@@ -229,15 +248,7 @@ def run_interactive_mode(
                 )
                 continue
 
-            # Show view mode menu
-            view_mode_option = client.display_view_mode_menu()
-            if view_mode_option == "4":
-                continue  # Back to events
-
-            view_mode_map = {"1": "all", "2": "results", "3": "upcoming"}
-            view_mode = view_mode_map.get(view_mode_option, "all")
-
-            results, _tbd_count = process_matches_func(client, match_links, view_mode)
+            results = fetch_result.processed.results
             last_loaded_results = results[:]
 
             # Apply team filter if set
@@ -310,12 +321,6 @@ def run_interactive_mode(
                 f"\n{formatter.warning('Application interrupted by user. Exiting...')}"
             )
             break
-        except RequestException as e:
-            logger.error(f"Network error: {e}")
-            print(f"\n{formatter.error('Network error while talking to vlr.gg.')}")
-            print(
-                f"{formatter.muted('Check your connection, then press r to refresh events or retry your selection.')}\n"
-            )
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"Data parsing error: {e}", exc_info=True)
             print(

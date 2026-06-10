@@ -1,17 +1,33 @@
 # Tests for async_client.py
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
 
-from async_client import (
+from valorant_matches.async_client import (
     AsyncRateLimiter,
     AsyncValorantClient,
     process_matches_async,
 )
-from match_extractor import Match
+from valorant_matches.match_extractor import Match, ProcessMatchResult
+
+
+def make_result(href: str, is_upcoming: bool = False) -> ProcessMatchResult:
+    """Build a ProcessMatchResult for a successful match fetch."""
+    return ProcessMatchResult(
+        match=Match(
+            date="Dec 23",
+            time="3:00 PM",
+            team1="Team A",
+            team2="Team B",
+            score="in 2h" if is_upcoming else "2-1",
+            is_live=False,
+            url=f"https://vlr.gg{href}",
+            is_upcoming=is_upcoming,
+        )
+    )
 
 
 class TestAsyncRateLimiter:
@@ -198,8 +214,8 @@ class TestProcessMatchesAsync:
         ]
 
         async with AsyncValorantClient(cache_enabled=False) as client:
-            # Mock process_match to return None (simulating failed matches)
-            client.process_match = AsyncMock(return_value=None)
+            # Mock process_match to return empty results (simulating failed matches)
+            client.process_match = AsyncMock(return_value=ProcessMatchResult())
 
             await process_matches_async(
                 client, mock_links, progress_callback=progress_callback
@@ -216,16 +232,7 @@ class TestProcessMatchesAsync:
         async def mock_process_match(link, upcoming_only=False):
             processing_times.append(asyncio.get_event_loop().time() - start_time)
             await asyncio.sleep(0.1)  # Simulate network delay
-            return Match(
-                date="Dec 23",
-                time="3:00 PM",
-                team1="Team A",
-                team2="Team B",
-                score="2-1",
-                is_live=False,
-                url=f"https://vlr.gg{link['href']}",
-                is_upcoming=False,
-            )
+            return make_result(link["href"])
 
         mock_links = [
             {"href": "/1/match1"},
@@ -254,16 +261,7 @@ class TestProcessMatchesAsync:
 
         async def mock_process_match(link, upcoming_only=False):
             await asyncio.sleep(delays[link["href"]])
-            return Match(
-                date="Dec 23",
-                time="3:00 PM",
-                team1="Team A",
-                team2="Team B",
-                score="2-1",
-                is_live=False,
-                url=f"https://vlr.gg{link['href']}",
-                is_upcoming=False,
-            )
+            return make_result(link["href"])
 
         mock_links = [
             {"href": "/1/match1"},
@@ -286,27 +284,7 @@ class TestProcessMatchesAsync:
         """Test that view_mode='results' filters out upcoming matches."""
 
         async def mock_process_match(link, upcoming_only=False):
-            if "upcoming" in link["href"]:
-                return Match(
-                    date="Dec 23",
-                    time="3:00 PM",
-                    team1="Team A",
-                    team2="Team B",
-                    score="in 2h",
-                    is_live=False,
-                    url="https://vlr.gg/1",
-                    is_upcoming=True,
-                )
-            return Match(
-                date="Dec 23",
-                time="3:00 PM",
-                team1="Team A",
-                team2="Team B",
-                score="2-1",
-                is_live=False,
-                url="https://vlr.gg/2",
-                is_upcoming=False,
-            )
+            return make_result(link["href"], is_upcoming="upcoming" in link["href"])
 
         mock_links = [
             {"href": "/1/upcoming-match"},
@@ -331,16 +309,7 @@ class TestProcessMatchesAsync:
         async def mock_process_match(link, upcoming_only=False):
             if "error" in link["href"]:
                 raise ValueError("Test error")
-            return Match(
-                date="Dec 23",
-                time="3:00 PM",
-                team1="Team A",
-                team2="Team B",
-                score="2-1",
-                is_live=False,
-                url=f"https://vlr.gg{link['href']}",
-                is_upcoming=False,
-            )
+            return make_result(link["href"])
 
         mock_links = [
             {"href": "/1/error-match"},
@@ -363,19 +332,10 @@ class TestProcessMatchesAsync:
 
         async def mock_process_match(link, upcoming_only=False):
             if "tbd" in link["href"]:
-                return "TBD"  # Sentinel value for TBD matches
+                return ProcessMatchResult(is_tbd=True)
             if "error" in link["href"]:
-                return None  # Actual failure
-            return Match(
-                date="Dec 23",
-                time="3:00 PM",
-                team1="Team A",
-                team2="Team B",
-                score="2-1",
-                is_live=False,
-                url=f"https://vlr.gg{link['href']}",
-                is_upcoming=False,
-            )
+                return ProcessMatchResult()  # Actual failure
+            return make_result(link["href"])
 
         mock_links = [
             {"href": "/1/tbd-match"},
@@ -393,6 +353,22 @@ class TestProcessMatchesAsync:
             assert len(processed.results) == 1
             # Should have counted 2 TBD matches
             assert processed.tbd_count == 2
+
+
+class TestClientCacheControl:
+    """Tests for cache enable/disable wiring."""
+
+    def test_cache_enabled_by_default(self):
+        """Cache should be enabled unless disabled explicitly."""
+        with patch("valorant_matches.async_client.MatchCache") as mock_cache:
+            AsyncValorantClient()
+            mock_cache.assert_called_once_with(enabled=True)
+
+    def test_cache_disabled(self):
+        """Cache can be disabled via constructor."""
+        with patch("valorant_matches.async_client.MatchCache") as mock_cache:
+            AsyncValorantClient(cache_enabled=False)
+            mock_cache.assert_called_once_with(enabled=False)
 
 
 class TestCircuitBreaker:

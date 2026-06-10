@@ -1,7 +1,7 @@
 # Tests for the formatter module.
 import pytest
 
-from formatter import STATUS_ICONS, VALORANT_THEME, Formatter
+from valorant_matches.formatter import STATUS_ICONS, VALORANT_THEME, Formatter
 
 
 @pytest.fixture
@@ -273,3 +273,52 @@ class TestPrintStatsFooter:
         )
         captured = capsys.readouterr()
         assert "Failed" not in captured.out
+
+
+class TestFormatMatchFull:
+    """Tests for full match formatting (ported from the removed sync client)."""
+
+    def _make_match(self, **overrides):
+        from valorant_matches.match_extractor import Match
+
+        values = {
+            "date": "Dec 23, 2025",
+            "time": "3:00 PM",
+            "team1": "Sentinels",
+            "team2": "Cloud9",
+            "score": "2 : 1",
+            "is_live": False,
+            "url": "https://vlr.gg/match/12345",
+            "is_upcoming": False,
+        }
+        values.update(overrides)
+        return Match(**values)
+
+    def test_completed_match(self, formatter):
+        output = formatter.format_match_full(self._make_match())
+        assert "Sentinels" in output
+        assert "Cloud9" in output
+        assert "2 : 1" in output
+        assert "LIVE" not in output
+        assert "UPCOMING" not in output
+
+    def test_live_match(self, formatter):
+        output = formatter.format_match_full(
+            self._make_match(team1="LOUD", team2="NRG", score="1 : 1", is_live=True)
+        )
+        assert "LOUD" in output
+        assert "NRG" in output
+        assert "LIVE" in output
+
+    def test_upcoming_match_without_countdown(self, formatter):
+        output = formatter.format_match_full(
+            self._make_match(score="Match has not started yet.", is_upcoming=True)
+        )
+        assert "UPCOMING" in output
+
+    def test_upcoming_match_with_eta(self, formatter):
+        output = formatter.format_match_full(
+            self._make_match(score="1h 30m", is_upcoming=True)
+        )
+        assert "in 1h 30m" in output
+        assert "UPCOMING" not in output

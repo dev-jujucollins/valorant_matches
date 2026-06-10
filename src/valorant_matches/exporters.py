@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from match_extractor import Match
+from valorant_matches.match_extractor import Match
 
 logger = logging.getLogger("valorant_matches")
 

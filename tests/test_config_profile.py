@@ -3,7 +3,12 @@
 import tempfile
 from pathlib import Path
 
-from config_profile import ConfigManager, UserProfile, get_profile, save_profile
+from valorant_matches.config_profile import (
+    ConfigManager,
+    UserProfile,
+    get_profile,
+    save_profile,
+)
 
 
 class TestUserProfile:

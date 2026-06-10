@@ -5,49 +5,25 @@ description = "A Python application that fetches and displays match results from
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "beautifulsoup4==4.12.3",
-    "requests==2.31.0",
-    "rich==13.7.0",
-    "urllib3==2.2.0",
-    "lxml==5.1.0",
-    "typing-extensions==4.9.0",
-    "certifi==2024.2.2",
-    "charset-normalizer==3.3.2",
-    "idna==3.6",
-    "soupsieve==2.5",
-    "markdown-it-py==3.0.0",
-    "pygments==2.17.2",
-    "linkify-it-py==2.0.3",
-    "mdurl==0.1.2",
-    "colorlog==6.8.2",
-    "python-dotenv==1.0.0",
     "aiohttp>=3.9.0",
+    "beautifulsoup4>=4.12.0",
     "cachetools>=5.0.0",
+    "colorlog>=6.8.0",
+    "lxml>=5.1.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.32.0",
+    "rich>=13.7.0",
 ]
 
 [project.scripts]
-valorant-matches = "main:main"
+valorant-matches = "valorant_matches.main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = [
-    "main.py",
-    "config.py",
-    "formatter.py",
-    "valorant_client.py",
-    "async_client.py",
-    "cache.py",
-    "event_discovery.py",
-    "match_extractor.py",
-    "event_manager.py",
-    "cli_mode.py",
-    "interactive.py",
-    "exporters.py",
-    "config_profile.py",
-]
+packages = ["src/valorant_matches"]
 
 [dependency-groups]
 dev = [
@@ -71,12 +47,13 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
-include = ["*.py", "tests"]
+include = ["src", "tests"]
 exclude = [".venv", "archived"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+src = ["src", "tests"]
 exclude = ["archived"]
 
 [tool.ruff.lint]
@@ -94,7 +71,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["valorant_client", "async_client", "config", "formatter", "cache", "match_extractor", "event_manager", "cli_mode", "interactive", "exporters", "config_profile"]
+known-first-party = ["valorant_matches"]
 
 [tool.ruff.format]
 quote-style = "double"

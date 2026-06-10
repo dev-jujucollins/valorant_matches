@@ -9,12 +9,16 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from config import CACHE_DIR, CACHE_ENABLED, CACHE_TTL_SECONDS
+from valorant_matches.config import CACHE_DIR, CACHE_ENABLED, CACHE_TTL_SECONDS
 
 logger = logging.getLogger("valorant_matches")
 
 # Default in-memory cache size (number of entries)
 MEMORY_CACHE_SIZE = 100
+
+# Bump when the cached Match payload shape changes; mismatched entries are
+# discarded instead of raising TypeError on Match(**data).
+CACHE_SCHEMA_VERSION = 1
 
 
 class MatchCache:
@@ -99,6 +103,11 @@ class MatchCache:
             with open(cache_path, encoding="utf-8") as f:
                 cached = json.load(f)
 
+            if cached.get("version") != CACHE_SCHEMA_VERSION:
+                logger.debug(f"Cache schema mismatch for {url}, discarding")
+                cache_path.unlink(missing_ok=True)
+                return None
+
             # Check if cache has expired
             if time.time() - cached["timestamp"] > self.ttl_seconds:
                 logger.debug(f"Cache expired for {url}")
@@ -129,6 +138,7 @@ class MatchCache:
         cache_path = self._get_cache_path(key)
         try:
             cache_entry = {
+                "version": CACHE_SCHEMA_VERSION,
                 "url": url,
                 "timestamp": time.time(),
                 "data": data,

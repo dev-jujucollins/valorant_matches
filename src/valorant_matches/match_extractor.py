@@ -1,13 +1,14 @@
-# Shared match extraction logic used by both sync and async clients.
+# Shared match extraction logic for the async client.
 
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 
-from config import RETRY_DELAY
+from valorant_matches.config import RETRY_DELAY
 
 logger = logging.getLogger("valorant_matches")
 
@@ -80,15 +81,6 @@ class ProcessedMatches:
     cache_hits: int = 0
     failed_count: int = 0
 
-    def __iter__(self):
-        """Allow legacy unpacking as (results, tbd_count)."""
-        yield self.results
-        yield self.tbd_count
-
-    def __len__(self) -> int:
-        """Return displayed result count for legacy len() calls."""
-        return len(self.results)
-
 
 class CircuitBreakerOpen(Exception):
     """Raised when the circuit breaker is open and requests are blocked."""
@@ -111,7 +103,7 @@ class CircuitBreakerMixin:
         """Calculate exponential backoff delay with jitter."""
         delay = RETRY_DELAY * (2**attempt)
         # Add some jitter (0-25% of delay)
-        jitter = delay * 0.25 * (time.time() % 1)
+        jitter = delay * 0.25 * random.random()
         return min(delay + jitter, MAX_BACKOFF_DELAY)
 
     def _check_circuit_breaker(self) -> None:

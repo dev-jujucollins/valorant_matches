@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 from bs4 import BeautifulSoup
 
-from event_discovery import (
+from valorant_matches.event_discovery import (
     REGION_ALIASES,
     DiscoveredEvent,
     EventDiscovery,

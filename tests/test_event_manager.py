@@ -2,8 +2,8 @@
 
 from unittest.mock import Mock
 
-from event_discovery import DiscoveredEvent
-from event_manager import get_event_for_region
+from valorant_matches.event_discovery import DiscoveredEvent
+from valorant_matches.event_manager import get_event_for_region
 
 
 def make_event(event_id: str, status: str, region: str = "americas") -> DiscoveredEvent:

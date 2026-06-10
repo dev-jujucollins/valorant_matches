@@ -10,16 +10,15 @@ from urllib.parse import urljoin
 import aiohttp
 from bs4 import BeautifulSoup
 
-from cache import MatchCache
-from config import (
+from valorant_matches.cache import MatchCache
+from valorant_matches.config import (
     BASE_URL,
     HEADERS,
     MAX_RETRIES,
     RATE_LIMIT_DELAY,
     REQUEST_TIMEOUT,
 )
-from formatter import Formatter
-from match_extractor import (
+from valorant_matches.match_extractor import (
     CircuitBreakerMixin,
     CircuitBreakerOpen,
     Match,
@@ -56,7 +55,6 @@ class AsyncValorantClient(CircuitBreakerMixin):
     """Async client for fetching and processing Valorant match data."""
 
     def __init__(self, cache_enabled: bool = True):
-        self.formatter = Formatter()
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
         self._init_circuit_breaker()
@@ -212,10 +210,6 @@ class AsyncValorantClient(CircuitBreakerMixin):
             logger.error(f"Error processing match {match_url}: {e}", exc_info=True)
             return ProcessMatchResult()
 
-    def _format_match_output(self, match: Match) -> str:
-        """Format match data for display."""
-        return self.formatter.format_match_full(match)
-
 
 async def process_matches_async(
     client: AsyncValorantClient,
@@ -235,14 +229,13 @@ async def process_matches_async(
     upcoming_only = view_mode == "upcoming"
     results_only = view_mode == "results"
 
-    # Create tasks for all matches
-    async def process_single(link):
+    async def process_single(link: dict) -> tuple[dict, ProcessMatchResult]:
         result = await client.process_match(link, upcoming_only)
         if progress_callback:
             progress_callback()
         return (link, result)
 
-    # Process all matches concurrently
+    # gather() returns in task order, so results stay in original link order
     tasks = [process_single(link) for link in match_links]
     completed = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -252,14 +245,6 @@ async def process_matches_async(
             failed_count += 1
             continue
         link, result = item
-        if not isinstance(result, ProcessMatchResult):
-            if isinstance(result, Match):
-                result = ProcessMatchResult(match=result)
-            elif result == "TBD":
-                result = ProcessMatchResult(is_tbd=True)
-            else:
-                result = ProcessMatchResult()
-
         if result.is_tbd:
             tbd_count += 1
         elif result.match:
@@ -271,11 +256,8 @@ async def process_matches_async(
         else:
             failed_count += 1
 
-    # Sort by original order (O(n) index lookup via dict)
-    link_order = {id(link): i for i, link in enumerate(match_links)}
-    sorted_results = sorted(results, key=lambda x: link_order[id(x[0])])
     return ProcessedMatches(
-        results=sorted_results,
+        results=results,
         tbd_count=tbd_count,
         cache_hits=cache_hits,
         failed_count=failed_count,
