@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-valorant-matches = "valorant_matches.main:main"
+valorant-matches = "valorant_matches.cli.app:main"
 
 [build-system]
 requires = ["hatchling"]

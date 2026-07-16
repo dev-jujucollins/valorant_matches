@@ -8,16 +8,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-from valorant_matches.cli_mode import run_cli_mode
+from valorant_matches.cli.display import run_cli_mode
+from valorant_matches.cli.interactive import run_interactive_mode
 from valorant_matches.config import APP_DIR, CACHE_DIR, EVENTS, LOGGING_CONFIG
-from valorant_matches.config_profile import UserProfile, config_manager
-from valorant_matches.event_discovery import (
+from valorant_matches.output.formatter import Formatter
+from valorant_matches.profile import UserProfile, config_manager
+from valorant_matches.scraping.discovery import (
     REGION_ALIASES,
     DiscoveredEvent,
     EventDiscovery,
 )
-from valorant_matches.formatter import Formatter
-from valorant_matches.interactive import run_interactive_mode
 
 logger = logging.getLogger("valorant_matches")
 

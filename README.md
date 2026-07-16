@@ -25,7 +25,7 @@ A Python application that fetches and displays match results from the Valorant C
 
 ## Installation
 
-### Using UV (Recommended)
+### Using UV
 
 1. Install UV if you haven't already:
 
@@ -50,39 +50,12 @@ cd valorant_matches
 uv sync
 ```
 
-4. Activate the virtual environment:
+No manual activation is required. Run commands through uv. The installed CLI
+entry point is `valorant_matches.cli.app:main`; direct module execution is also
+available:
 
 ```bash
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-### Using pip (Alternative)
-
-1. Clone the repository:
-
-```bash
-git clone https://github.com/yourusername/valorant_matches.git
-cd valorant_matches
-```
-
-2. Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install project:
-
-```bash
-pip install -e .
-```
-
-If you only want dependency install without package entry points:
-
-```bash
-pip install -r requirements.txt
-PYTHONPATH=src python -m valorant_matches.main
+uv run python -m valorant_matches.cli.app
 ```
 
 ## Usage
@@ -197,34 +170,56 @@ Available options:
 | `REQUEST_TIMEOUT` | 10 | HTTP request timeout in seconds |
 | `MAX_RETRIES` | 3 | Number of retry attempts for failed requests |
 | `RETRY_DELAY` | 1 | Delay between retries in seconds |
-| `MAX_WORKERS` | 10 | Number of concurrent workers |
 | `CACHE_ENABLED` | true | Enable/disable match data caching |
-| `CACHE_TTL_SECONDS` | 300 | Cache time-to-live (5 minutes) |
+| `CACHE_TTL_SECONDS` | 3600 | Completed-match cache TTL in seconds |
+| `RATE_LIMIT_DELAY` | 0.5 | Minimum delay between match requests |
 | `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `VALORANT_MATCHES_HOME` | `~/.valorant-matches` | Runtime data directory |
+| `CACHE_DIR` | `<app home>/cache` | Optional cache-only override |
 
 ## Project Structure
 
 ```
 valorant_matches/
 ├── src/valorant_matches/
-│   ├── main.py              # Application entry point and CLI argument parsing
-│   ├── runner.py            # Sync entry point driving the async client
-│   ├── async_client.py      # Async match fetching with rate limiting
-│   ├── event_discovery.py   # Auto-discovers VCT events from vlr.gg
-│   ├── event_manager.py     # Event selection and region mapping
-│   ├── cli_mode.py          # CLI mode logic and display options
-│   ├── interactive.py       # Interactive mode with keyboard shortcuts
-│   ├── match_extractor.py   # HTML parsing and data extraction
-│   ├── exporters.py         # JSON/CSV export functionality
-│   ├── config.py            # Configuration and constants
-│   ├── config_profile.py    # Saved user defaults (~/.valorant-matches)
-│   ├── formatter.py         # Rich-based terminal formatting
-│   └── cache.py             # Match data caching with TTL
-├── tests/               # Test suite
-├── pyproject.toml       # Project metadata and dependencies
-├── requirements.txt     # Legacy pip dependencies
-└── .env.example         # Configuration template
+│   ├── cli/
+│   │   ├── app.py            # Entry point and argument parsing
+│   │   ├── display.py        # Non-interactive CLI workflows
+│   │   └── interactive.py    # Interactive menu workflows
+│   ├── output/
+│   │   ├── exporters.py      # JSON/CSV export
+│   │   └── formatter.py      # Rich terminal formatting
+│   ├── scraping/
+│   │   ├── client.py         # Async match fetching
+│   │   ├── discovery.py      # VCT event discovery
+│   │   ├── event_selection.py
+│   │   ├── matches.py        # Match parsing and models
+│   │   └── runner.py         # Sync wrapper for async fetching
+│   ├── cache.py               # File cache
+│   ├── config.py              # Environment and constants
+│   └── profile.py             # Saved user defaults
+├── tests/                      # Mirrors package areas above
+│   ├── cli/
+│   ├── output/
+│   ├── scraping/
+│   ├── test_cache.py
+│   ├── test_config.py
+│   ├── test_profile.py
+│   └── test_project_config.py
+├── pyproject.toml              # Project metadata and dependencies
+├── requirements.txt            # Runtime dependency mirror
+└── .env.example                # Configuration template
 ```
+
+The repeated name is intentional: outer `valorant_matches/` is the repository,
+while `src/valorant_matches/` is the importable Python package. The `src/`
+boundary prevents accidental imports from the repository root. Inside the
+package, modules are grouped by responsibility:
+
+- `cli/`: command parsing and user workflows
+- `scraping/`: event discovery, selection, requests, and HTML parsing
+- `output/`: Rich terminal formatting and JSON/CSV export
+- root modules: shared cache, configuration, and saved profile state
 
 Logs and the match cache live in `~/.valorant-matches/` (override with
 `VALORANT_MATCHES_HOME` or `CACHE_DIR`), so running the CLI never litters
@@ -241,13 +236,19 @@ uv run pytest
 # With coverage
 uv run pytest --cov
 
-# Using pip
-pytest
+# Focused areas
+uv run pytest tests/cli/test_app.py
+uv run pytest tests/scraping/test_matches.py -k "extract_teams"
 ```
+
+GitHub Actions runs locked dependency sync, Ruff formatting and lint checks,
+Pyright, and the full pytest suite for every push and pull request. See
+`.github/workflows/ci.yml`.
 
 ## Logging
 
-The application logs information to both the console and a file (`valorant_matches.log`). Log levels:
+The application logs to the console and
+`~/.valorant-matches/valorant_matches.log` by default. Log levels:
 
 - DEBUG: Detailed information for debugging
 - INFO: General operational information

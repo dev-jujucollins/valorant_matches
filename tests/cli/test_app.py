@@ -1,11 +1,9 @@
-# Tests for main.py CLI helpers.
+# Tests for CLI application helpers.
 
 import sys
 from unittest.mock import Mock, patch
 
-from valorant_matches.config_profile import ConfigManager, UserProfile
-from valorant_matches.interactive import _suggest_team_names
-from valorant_matches.main import (
+from valorant_matches.cli.app import (
     CLI_COMMAND,
     apply_profile_defaults,
     get_completion_script,
@@ -13,21 +11,7 @@ from valorant_matches.main import (
     run_config_command,
     run_doctor,
 )
-from valorant_matches.match_extractor import Match
-
-
-def make_match(team1: str, team2: str) -> Match:
-    """Create a minimal Match object for testing."""
-    return Match(
-        date="Jan 1",
-        time="12:00",
-        team1=team1,
-        team2=team2,
-        score="0-0",
-        is_live=False,
-        url="https://vlr.gg/1",
-        is_upcoming=True,
-    )
+from valorant_matches.profile import ConfigManager, UserProfile
 
 
 class TestMainArgs:
@@ -35,20 +19,20 @@ class TestMainArgs:
 
     def test_parse_args_doctor(self):
         """--doctor flag should parse correctly."""
-        with patch.object(sys, "argv", ["valorant_matches.main.py", "--doctor"]):
+        with patch.object(sys, "argv", ["valorant-matches", "--doctor"]):
             args = parse_args()
         assert args.doctor is True
 
     def test_parse_args_quickstart(self):
         """--quickstart flag should parse correctly."""
-        with patch.object(sys, "argv", ["valorant_matches.main.py", "--quickstart"]):
+        with patch.object(sys, "argv", ["valorant-matches", "--quickstart"]):
             args = parse_args()
         assert args.quickstart is True
 
     def test_parse_args_print_completion(self):
         """--print-completion should parse shell choice."""
         with patch.object(
-            sys, "argv", ["valorant_matches.main.py", "--print-completion", "bash"]
+            sys, "argv", ["valorant-matches", "--print-completion", "bash"]
         ):
             args = parse_args()
         assert args.print_completion == "bash"
@@ -58,7 +42,7 @@ class TestMainArgs:
         with patch.object(
             sys,
             "argv",
-            ["valorant_matches.main.py", "config", "set", "default-region", "americas"],
+            ["valorant-matches", "config", "set", "default-region", "americas"],
         ):
             args = parse_args()
         assert args.command == "config"
@@ -69,7 +53,7 @@ class TestMainArgs:
     def test_parse_args_completion_install(self):
         """Completion install subcommand should parse shell."""
         with patch.object(
-            sys, "argv", ["valorant_matches.main.py", "completion", "install", "zsh"]
+            sys, "argv", ["valorant-matches", "completion", "install", "zsh"]
         ):
             args = parse_args()
         assert args.command == "completion"
@@ -202,21 +186,8 @@ class TestConfigCommand:
         manager = ConfigManager(tmp_path / "config.json")
         args = Mock(config_command="set", key="default-region", value="americas")
 
-        with patch("valorant_matches.main.config_manager", manager):
+        with patch("valorant_matches.cli.app.config_manager", manager):
             exit_code = run_config_command(args, formatter)
 
         assert exit_code == 0
         assert manager.load().default_region == "americas"
-
-
-class TestInteractiveSuggestions:
-    """Tests for fuzzy team suggestions in interactive mode."""
-
-    def test_suggest_team_names_returns_close_match(self):
-        """Fuzzy search should suggest close team names."""
-        results = [
-            ({"href": "/1"}, make_match("Sentinels", "Cloud9")),
-            ({"href": "/2"}, make_match("Fnatic", "Team Heretics")),
-        ]
-        suggestions = _suggest_team_names(results, "Sentinal")
-        assert "Sentinels" in suggestions

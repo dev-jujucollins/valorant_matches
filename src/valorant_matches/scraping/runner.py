@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 
 from rich.progress import Progress
 
-from valorant_matches.async_client import AsyncValorantClient, process_matches_async
-from valorant_matches.match_extractor import ProcessedMatches
+from valorant_matches.scraping.client import AsyncValorantClient, process_matches_async
+from valorant_matches.scraping.matches import ProcessedMatches
 
 logger = logging.getLogger("valorant_matches")
 

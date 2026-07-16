@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.async_client import AsyncValorantClient, process_matches_async
-from valorant_matches.match_extractor import (
+from valorant_matches.scraping.client import AsyncValorantClient, process_matches_async
+from valorant_matches.scraping.matches import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     CircuitBreakerOpen,
@@ -151,7 +151,7 @@ class TestRegionFallbackMapping:
     def test_region_fallback_keys_completeness(self):
         """Test that all regions in REGION_ALIASES have fallback keys."""
         from valorant_matches.config import REGION_FALLBACK_KEYS
-        from valorant_matches.event_discovery import REGION_ALIASES
+        from valorant_matches.scraping.discovery import REGION_ALIASES
 
         for region in REGION_ALIASES:
             assert region in REGION_FALLBACK_KEYS, f"Missing fallback key for {region}"

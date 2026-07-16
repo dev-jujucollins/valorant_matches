@@ -1,9 +1,9 @@
-# Tests for config_profile.py
+# Tests for saved configuration profiles.
 
 import tempfile
 from pathlib import Path
 
-from valorant_matches.config_profile import (
+from valorant_matches.profile import (
     ConfigManager,
     UserProfile,
     get_profile,

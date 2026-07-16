@@ -1,9 +1,9 @@
-# Tests for cli_mode.py
+# Tests for non-interactive CLI display workflows.
 
 import argparse
 from unittest.mock import Mock, patch
 
-from valorant_matches.cli_mode import (
+from valorant_matches.cli.display import (
     DisplayOptions,
     MatchStats,
     filter_matches_by_team,
@@ -14,8 +14,8 @@ from valorant_matches.cli_mode import (
     run_cli_mode,
     sort_matches,
 )
-from valorant_matches.match_extractor import Match, ProcessedMatches
-from valorant_matches.runner import EventFetchResult
+from valorant_matches.scraping.matches import Match, ProcessedMatches
+from valorant_matches.scraping.runner import EventFetchResult
 
 
 def make_match(
@@ -379,10 +379,12 @@ class TestRunCliMode:
 
         with (
             patch(
-                "valorant_matches.cli_mode.fetch_event_data",
+                "valorant_matches.cli.display.fetch_event_data",
                 return_value=_make_fetch_result(),
             ),
-            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
+            patch(
+                "valorant_matches.cli.display.get_event_for_region", return_value=event
+            ),
         ):
             exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
 
@@ -400,10 +402,12 @@ class TestRunCliMode:
 
         with (
             patch(
-                "valorant_matches.cli_mode.fetch_event_data",
+                "valorant_matches.cli.display.fetch_event_data",
                 return_value=_make_fetch_result(),
             ),
-            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
+            patch(
+                "valorant_matches.cli.display.get_event_for_region", return_value=event
+            ),
         ):
             exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
 
@@ -423,10 +427,12 @@ class TestRunCliMode:
 
         with (
             patch(
-                "valorant_matches.cli_mode.fetch_event_data",
+                "valorant_matches.cli.display.fetch_event_data",
                 return_value=fetch_result,
             ),
-            patch("valorant_matches.cli_mode.get_event_for_region", return_value=event),
+            patch(
+                "valorant_matches.cli.display.get_event_for_region", return_value=event
+            ),
         ):
             exit_code = run_cli_mode(args, formatter, Mock(), Mock())
 
@@ -441,14 +447,14 @@ class TestParseDateYearInference:
     def _patched_parse(self, date_str: str, fake_today):
         from datetime import datetime as real_datetime
 
-        from valorant_matches.cli_mode import _parse_date
+        from valorant_matches.cli.display import _parse_date
 
         class FakeDateTime(real_datetime):
             @classmethod
             def now(cls, tz=None):
                 return fake_today
 
-        with patch("valorant_matches.cli_mode.datetime", FakeDateTime):
+        with patch("valorant_matches.cli.display.datetime", FakeDateTime):
             return _parse_date(date_str)
 
     def test_january_date_in_december_resolves_to_next_year(self):

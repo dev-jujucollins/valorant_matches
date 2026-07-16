@@ -1,10 +1,10 @@
-# Tests for the match_extractor module.
+# Tests for match extraction.
 import time
 
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.match_extractor import (
+from valorant_matches.scraping.matches import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     COUNTDOWN_PATTERN,

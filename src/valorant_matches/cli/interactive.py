@@ -4,17 +4,17 @@ import json
 import logging
 from difflib import get_close_matches
 
-from valorant_matches.cli_mode import (
+from valorant_matches.cli.display import (
     filter_matches_by_team,
     format_match_full,
     group_matches,
     sort_matches,
 )
 from valorant_matches.config import EVENTS
-from valorant_matches.event_discovery import DiscoveredEvent, EventDiscovery
-from valorant_matches.formatter import Formatter
-from valorant_matches.match_extractor import Match
-from valorant_matches.runner import fetch_event_data
+from valorant_matches.output.formatter import Formatter
+from valorant_matches.scraping.discovery import DiscoveredEvent, EventDiscovery
+from valorant_matches.scraping.matches import Match
+from valorant_matches.scraping.runner import fetch_event_data
 
 logger = logging.getLogger("valorant_matches")
 

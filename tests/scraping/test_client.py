@@ -1,4 +1,4 @@
-# Tests for async_client.py
+# Tests for async scraping client.
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.async_client import (
+from valorant_matches.scraping.client import (
     AsyncRateLimiter,
     AsyncValorantClient,
     process_matches_async,
 )
-from valorant_matches.match_extractor import Match, ProcessMatchResult
+from valorant_matches.scraping.matches import Match, ProcessMatchResult
 
 
 def make_result(href: str, is_upcoming: bool = False) -> ProcessMatchResult:
@@ -360,13 +360,13 @@ class TestClientCacheControl:
 
     def test_cache_enabled_by_default(self):
         """Cache should be enabled unless disabled explicitly."""
-        with patch("valorant_matches.async_client.MatchCache") as mock_cache:
+        with patch("valorant_matches.scraping.client.MatchCache") as mock_cache:
             AsyncValorantClient()
             mock_cache.assert_called_once_with(enabled=True)
 
     def test_cache_disabled(self):
         """Cache can be disabled via constructor."""
-        with patch("valorant_matches.async_client.MatchCache") as mock_cache:
+        with patch("valorant_matches.scraping.client.MatchCache") as mock_cache:
             AsyncValorantClient(cache_enabled=False)
             mock_cache.assert_called_once_with(enabled=False)
 

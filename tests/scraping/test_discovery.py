@@ -1,10 +1,10 @@
-# Tests for the event_discovery module.
+# Tests for event discovery.
 from unittest.mock import patch
 
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.event_discovery import (
+from valorant_matches.scraping.discovery import (
     REGION_ALIASES,
     DiscoveredEvent,
     EventDiscovery,

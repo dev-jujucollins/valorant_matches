@@ -1,7 +1,7 @@
 # Tests for the formatter module.
 import pytest
 
-from valorant_matches.formatter import STATUS_ICONS, VALORANT_THEME, Formatter
+from valorant_matches.output.formatter import STATUS_ICONS, VALORANT_THEME, Formatter
 
 
 @pytest.fixture
@@ -279,7 +279,7 @@ class TestFormatMatchFull:
     """Tests for full match formatting (ported from the removed sync client)."""
 
     def _make_match(self, **overrides):
-        from valorant_matches.match_extractor import Match
+        from valorant_matches.scraping.matches import Match
 
         values = {
             "date": "Dec 23, 2025",

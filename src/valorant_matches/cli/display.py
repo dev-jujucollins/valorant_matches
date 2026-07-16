@@ -7,12 +7,12 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from valorant_matches.event_discovery import EventDiscovery
-from valorant_matches.event_manager import get_event_for_region
-from valorant_matches.exporters import export_matches
-from valorant_matches.formatter import Formatter
-from valorant_matches.match_extractor import Match
-from valorant_matches.runner import fetch_event_data
+from valorant_matches.output.exporters import export_matches
+from valorant_matches.output.formatter import Formatter
+from valorant_matches.scraping.discovery import EventDiscovery
+from valorant_matches.scraping.event_selection import get_event_for_region
+from valorant_matches.scraping.matches import Match
+from valorant_matches.scraping.runner import fetch_event_data
 
 logger = logging.getLogger("valorant_matches")
 

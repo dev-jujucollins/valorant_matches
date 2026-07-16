@@ -18,7 +18,7 @@ from valorant_matches.config import (
     RATE_LIMIT_DELAY,
     REQUEST_TIMEOUT,
 )
-from valorant_matches.match_extractor import (
+from valorant_matches.scraping.matches import (
     CircuitBreakerMixin,
     CircuitBreakerOpen,
     Match,
