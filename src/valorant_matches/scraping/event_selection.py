@@ -3,7 +3,7 @@
 import logging
 
 from valorant_matches.config import EVENTS, REGION_FALLBACK_KEYS
-from valorant_matches.event_discovery import (
+from valorant_matches.scraping.discovery import (
     REGION_ALIASES,
     DiscoveredEvent,
     EventDiscovery,

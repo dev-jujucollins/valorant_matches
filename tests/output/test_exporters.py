@@ -5,13 +5,13 @@ import json
 import tempfile
 from pathlib import Path
 
-from valorant_matches.exporters import (
+from valorant_matches.output.exporters import (
     export_csv,
     export_json,
     export_matches,
     match_to_dict,
 )
-from valorant_matches.match_extractor import Match
+from valorant_matches.scraping.matches import Match
 
 
 def make_match(

@@ -9,7 +9,7 @@ from rich.text import Text
 from rich.theme import Theme
 
 if TYPE_CHECKING:
-    from valorant_matches.match_extractor import Match
+    from valorant_matches.scraping.matches import Match
 
 # Custom theme for consistent styling across the application
 VALORANT_THEME = Theme(
@@ -155,7 +155,7 @@ class Formatter:
 
     def format_match_full(self, match: Match) -> str:
         """Format match data for full multi-line display."""
-        from valorant_matches.match_extractor import format_eta
+        from valorant_matches.scraping.matches import format_eta
 
         separator = "─" * 100
         date_time = self.date_time(f"{match.date}  {match.time}")

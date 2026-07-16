@@ -1,9 +1,9 @@
-# Tests for event_manager.py
+# Tests for event selection.
 
 from unittest.mock import Mock
 
-from valorant_matches.event_discovery import DiscoveredEvent
-from valorant_matches.event_manager import get_event_for_region
+from valorant_matches.scraping.discovery import DiscoveredEvent
+from valorant_matches.scraping.event_selection import get_event_for_region
 
 
 def make_event(event_id: str, status: str, region: str = "americas") -> DiscoveredEvent:
