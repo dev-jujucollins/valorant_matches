@@ -361,9 +361,9 @@ class TestExtractionFunctions:
     def test_extract_score_strips_notes(self):
         """Test extract_score removes the final/vs./Bo3 notes VLR appends."""
         html = (
-            '<html><body>'
+            "<html><body>"
             '<div class="js-spoiler">final 2 : 1 vs. Bo3</div>'
-            '</body></html>'
+            "</body></html>"
         )
         soup = BeautifulSoup(html, "html.parser")
         score = extract_score(soup)
