@@ -16,6 +16,9 @@ logger = logging.getLogger("valorant_matches")
 MATCH_URL_PATTERN = re.compile(r"^/\d+/")
 EVENT_SLUG_PATTERN = re.compile(r"/event/matches/\d+/([^/]+)")
 COUNTDOWN_PATTERN = re.compile(r"^\d+[dhm]\s")
+# Notes VLR appends inside the score element on completed matches, e.g.
+# "final", "vs."/"vs", and the best-of designation "Bo3"/"Bo5".
+SCORE_NOTE_PATTERN = re.compile(r"\b(?:Bo\d+|final|vs)\b\.?", re.IGNORECASE)
 
 # Maximum backoff delay in seconds
 MAX_BACKOFF_DELAY = 30
@@ -164,6 +167,10 @@ def extract_score(soup: BeautifulSoup) -> str:
         score_elem = soup.find(tag, class_=class_name)
         if score_elem:
             score = score_elem.text.strip()
+            score = " ".join(score.split())
+            # Strip the notes (e.g. "final", "vs.", "Bo3") VLR appends inside the
+            # score element, so they don't render between the score and team2.
+            score = SCORE_NOTE_PATTERN.sub("", score)
             score = " ".join(score.split())
             if score:
                 return score
