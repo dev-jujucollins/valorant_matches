@@ -214,3 +214,30 @@ def test_footer_separates_skipped_from_failed(capsys) -> None:
     output = capsys.readouterr().out
     assert "Skipped: 3" in output
     assert "Failed:" not in output
+
+
+@pytest.mark.parametrize("width", [60, 80])
+def test_full_match_keeps_links_intact_and_rule_within_terminal(width: int) -> None:
+    """Styling must not insert newlines into URLs or double-wrap separators."""
+    from rich.text import Text
+
+    from valorant_matches.scraping.matches import Match
+
+    formatter = Formatter()
+    formatter.console.width = width
+    formatter.console.height = 25
+    match = Match(
+        "Saturday, September 26",
+        "Time TBD (date tentative)",
+        "Karmine Corp",
+        "Xi Lai Gaming",
+        "Match has not started yet.",
+        False,
+        "https://vlr.gg/753459/karmine-corp-vs-xi-lai-gaming-valorant-champions-2026-opening-d",
+        is_upcoming=True,
+    )
+    output = Text.from_ansi(formatter.format_match_full(match)).plain
+    assert f"Stats: {match.url}" in output.splitlines()
+    rules = [line for line in output.splitlines() if line and set(line) == {"─"}]
+    assert rules == ["─" * width]
+    assert "Time TBD (date tentative)" in output

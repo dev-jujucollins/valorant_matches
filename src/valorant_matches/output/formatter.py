@@ -61,7 +61,7 @@ class Formatter:
             width=self.console.width,
             record=True,
         )
-        render_console.print(formatted, end="")
+        render_console.print(formatted, end="", soft_wrap=True)
         return render_console.export_text(styles=True)
 
     def error(self, text: str, bold: bool = True) -> str:
@@ -157,7 +157,7 @@ class Formatter:
         """Format match data for full multi-line display."""
         from valorant_matches.scraping.matches import format_eta
 
-        separator = "─" * 100
+        separator = "─" * min(100, self.console.width)
         date_time = self.date_time(f"{match.date}  {match.time}")
         teams = self.team_name(f"{match.team1} vs {match.team2}")
         stats_link = self.stats_link(f"Stats: {match.url}")

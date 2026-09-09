@@ -140,3 +140,68 @@ def test_match_links_skip_non_string_href() -> None:
         '<a href="/1/match">Match</a>', "lxml", multi_valued_attributes={"a": ["href"]}
     )
     assert find_event_match_links(soup) == []
+
+
+@pytest.mark.parametrize("mode, count", [("all", 1), ("upcoming", 1), ("results", 0)])
+async def test_champions_tentative_schedule(mode: str, count: int) -> None:
+    """Tentative Champions fixtures stay upcoming without invented start times."""
+    from valorant_matches.cli.display import localize_matches
+    from valorant_matches.scraping.client import (
+        AsyncValorantClient,
+        process_matches_async,
+    )
+
+    async with AsyncValorantClient(cache_enabled=False) as client:
+        with patch(
+            "aiohttp.ClientSession.get",
+            return_value=response_for("champions-tentative"),
+        ):
+            processed = await process_matches_async(
+                client, [{"href": "/753444/champions"}], mode
+            )
+    assert len(processed.results) == count
+    assert processed.failed_count == 0
+    if count:
+        match = localize_matches(processed.results, "America/Los_Angeles", False)[0][1]
+        assert match.status == "upcoming"
+        assert match.start_time is None
+        assert match.date == "Saturday, September 26"
+        assert match.time == "Time TBD (date tentative)"
+        output = Formatter().format_match_full(match)
+        assert "UPCOMING" in output
+        assert "Score:" not in output
+        assert "Time TBD" in output
+        assert not localize_matches(processed.results, "UTC", True)
+
+
+async def test_champions_rejects_previously_miscached_score() -> None:
+    """Refetch old cache records that mislabeled TBD matches as completed."""
+    from dataclasses import asdict
+
+    from valorant_matches.scraping.client import AsyncValorantClient
+    from valorant_matches.scraping.matches import Match
+
+    stale = Match(
+        "September 25, 2026",
+        "10:00 PM PDT",
+        "100 Thieves",
+        "T1",
+        "TBD –",
+        False,
+        "https://vlr.gg/753444/champions",
+    )
+    with patch("valorant_matches.scraping.client.MatchCache") as cache:
+        cache.return_value.get.return_value = asdict(stale)
+        async with AsyncValorantClient() as client:
+            with patch(
+                "aiohttp.ClientSession.get",
+                return_value=response_for("champions-tentative"),
+            ) as get:
+                result = await client.process_match({"href": "/753444/champions"})
+        get.assert_called_once()
+        cache.return_value.invalidate.assert_called_once_with(stale.url)
+        cache.return_value.set.assert_not_called()
+    assert result.match is not None
+    assert result.match.is_upcoming
+    assert result.match.start_time is None
+    assert not result.cache_hit
