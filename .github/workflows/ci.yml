@@ -72,14 +72,16 @@ jobs:
           uv venv "$RUNNER_TEMP/wheel-smoke"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             smoke_bin="$RUNNER_TEMP/wheel-smoke/Scripts"
+            smoke_python="$smoke_bin/python.exe"
           else
             smoke_bin="$RUNNER_TEMP/wheel-smoke/bin"
+            smoke_python="$smoke_bin/python"
           fi
-          uv pip install --python "$smoke_bin/python" dist/*.whl
+          uv pip install --python "$smoke_python" dist/*.whl
           cd "$RUNNER_TEMP"
           "$smoke_bin/valorant-matches" --help
           "$smoke_bin/valorant-matches" --quickstart
-          "$smoke_bin/python" -m valorant_matches.cli.app --help
+          "$smoke_python" -m valorant_matches.cli.app --help
 
   quality:
     name: Quality checks
