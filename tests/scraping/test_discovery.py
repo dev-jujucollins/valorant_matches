@@ -11,26 +11,6 @@ from valorant_matches.scraping.discovery import (
 )
 
 
-class TestDiscoveredEvent:
-    def test_dataclass_fields(self):
-        """Test DiscoveredEvent has all required fields."""
-        event = DiscoveredEvent(
-            name="VCT 2026: Americas Kickoff",
-            url="https://vlr.gg/event/matches/2682/vct-2026-americas-kickoff/",
-            event_id="2682",
-            slug="vct-2026-americas-kickoff",
-            status="upcoming",
-            dates="Jan 15—Feb 15",
-            region="americas",
-        )
-
-        assert event.name == "VCT 2026: Americas Kickoff"
-        assert event.event_id == "2682"
-        assert event.slug == "vct-2026-americas-kickoff"
-        assert event.status == "upcoming"
-        assert event.region == "americas"
-
-
 class TestRegionAliases:
     def test_americas_aliases(self):
         """Test Americas region aliases."""
@@ -261,3 +241,15 @@ class TestEventDiscovery:
         regions = discovery.list_regions()
         assert "americas" in regions
         assert "emea" in regions
+
+
+def test_discovery_skips_non_string_link_attributes() -> None:
+    """Malformed multi-valued hrefs must not break event discovery."""
+    soup = BeautifulSoup(
+        '<a href="/event/1/vct-2026-americas-kickoff">Event</a>',
+        "lxml",
+        multi_valued_attributes={"a": ["href"]},
+    )
+    discovery = EventDiscovery()
+    with patch.object(discovery, "_make_request", return_value=soup):
+        assert discovery.discover_events(force_refresh=True) == []

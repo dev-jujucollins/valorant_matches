@@ -201,6 +201,8 @@ class EventDiscovery:
         seen_ids: set[str] = set()
         for link in event_links:
             href = link.get("href", "")
+            if not isinstance(href, str):
+                continue
             extracted = self._extract_event_id(href)
             if not extracted:
                 continue

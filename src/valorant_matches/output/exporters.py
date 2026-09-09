@@ -12,14 +12,10 @@ logger = logging.getLogger("valorant_matches")
 
 def match_to_dict(match: Match) -> dict:
     """Convert a Match object to a dictionary for export."""
-    if match.is_live:
-        status = "live"
-    elif match.is_upcoming:
-        status = "upcoming"
-    else:
-        status = "completed"
+    status = match.status
 
     return {
+        "start_time": match.start_time,
         "date_time": f"{match.date} {match.time}",
         "team1": match.team1,
         "team2": match.team2,
@@ -64,7 +60,7 @@ def export_csv(results: list[tuple[dict, Match]], output_path: str | Path) -> in
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fieldnames = ["date_time", "team1", "team2", "score", "status", "url"]
+    fieldnames = ["date_time", "start_time", "team1", "team2", "score", "status", "url"]
 
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

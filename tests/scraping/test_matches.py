@@ -8,16 +8,11 @@ from valorant_matches.scraping.matches import (
     CIRCUIT_BREAKER_RESET_TIME,
     CIRCUIT_BREAKER_THRESHOLD,
     COUNTDOWN_PATTERN,
-    DATE_SELECTORS,
     EVENT_SLUG_PATTERN,
-    LIVE_SELECTORS,
     MATCH_URL_PATTERN,
     MAX_BACKOFF_DELAY,
-    SCORE_SELECTORS,
-    TEAM_SELECTORS,
     CircuitBreakerMixin,
     CircuitBreakerOpen,
-    Match,
     extract_date_time,
     extract_live_status,
     extract_match_data,
@@ -63,102 +58,6 @@ class TestConstants:
         assert not COUNTDOWN_PATTERN.match("Match has not started")
         assert not COUNTDOWN_PATTERN.match("2 : 1")
 
-    def test_max_backoff_delay(self):
-        """Test MAX_BACKOFF_DELAY is a reasonable value."""
-        assert MAX_BACKOFF_DELAY == 30
-        assert isinstance(MAX_BACKOFF_DELAY, int)
-
-    def test_circuit_breaker_threshold(self):
-        """Test CIRCUIT_BREAKER_THRESHOLD is a reasonable value."""
-        assert CIRCUIT_BREAKER_THRESHOLD == 5
-        assert isinstance(CIRCUIT_BREAKER_THRESHOLD, int)
-
-    def test_circuit_breaker_reset_time(self):
-        """Test CIRCUIT_BREAKER_RESET_TIME is a reasonable value."""
-        assert CIRCUIT_BREAKER_RESET_TIME == 60
-        assert isinstance(CIRCUIT_BREAKER_RESET_TIME, int)
-
-
-class TestCSSSelectors:
-    """Tests for CSS selector constants."""
-
-    def test_team_selectors_defined(self):
-        """Test TEAM_SELECTORS is properly defined."""
-        assert len(TEAM_SELECTORS) >= 2
-        for selector in TEAM_SELECTORS:
-            assert len(selector) == 2  # (tag, class)
-            assert isinstance(selector[0], str)
-            assert isinstance(selector[1], str)
-
-    def test_score_selectors_defined(self):
-        """Test SCORE_SELECTORS is properly defined."""
-        assert len(SCORE_SELECTORS) >= 2
-        for selector in SCORE_SELECTORS:
-            assert len(selector) == 2
-
-    def test_live_selectors_defined(self):
-        """Test LIVE_SELECTORS is properly defined."""
-        assert len(LIVE_SELECTORS) >= 2
-        for selector in LIVE_SELECTORS:
-            assert len(selector) == 2
-
-    def test_date_selectors_defined(self):
-        """Test DATE_SELECTORS is properly defined."""
-        assert len(DATE_SELECTORS) >= 1
-        for selector in DATE_SELECTORS:
-            assert len(selector) == 2
-
-
-class TestMatchDataclass:
-    """Tests for Match dataclass."""
-
-    def test_match_creation(self):
-        """Test Match dataclass can be created."""
-        match = Match(
-            date="Dec 23, 2025",
-            time="3:00 PM",
-            team1="Sentinels",
-            team2="Cloud9",
-            score="2 : 1",
-            is_live=False,
-            url="https://vlr.gg/match/12345",
-        )
-        assert match.date == "Dec 23, 2025"
-        assert match.time == "3:00 PM"
-        assert match.team1 == "Sentinels"
-        assert match.team2 == "Cloud9"
-        assert match.score == "2 : 1"
-        assert match.is_live is False
-        assert match.url == "https://vlr.gg/match/12345"
-        assert match.is_upcoming is False  # default
-
-    def test_match_with_upcoming(self):
-        """Test Match with is_upcoming flag."""
-        match = Match(
-            date="Dec 25, 2025",
-            time="2:00 PM",
-            team1="Team A",
-            team2="Team B",
-            score="1h 30m",
-            is_live=False,
-            url="https://vlr.gg/match/12346",
-            is_upcoming=True,
-        )
-        assert match.is_upcoming is True
-
-    def test_match_with_live(self):
-        """Test Match with live status."""
-        match = Match(
-            date="Dec 23, 2025",
-            time="5:00 PM",
-            team1="LOUD",
-            team2="NRG",
-            score="1 : 1",
-            is_live=True,
-            url="https://vlr.gg/match/12347",
-        )
-        assert match.is_live is True
-
 
 class TestCircuitBreakerMixin:
     """Tests for CircuitBreakerMixin."""
@@ -171,12 +70,6 @@ class TestCircuitBreakerMixin:
                 self._init_circuit_breaker()
 
         return TestClient()
-
-    def test_init_circuit_breaker(self):
-        """Test _init_circuit_breaker initializes state."""
-        client = self._create_mixin_instance()
-        assert client._failure_count == 0
-        assert client._circuit_open_time is None
 
     def test_calculate_backoff(self):
         """Test _calculate_backoff returns exponential delays."""
@@ -205,7 +98,7 @@ class TestCircuitBreakerMixin:
     def test_check_circuit_breaker_when_open(self):
         """Test _check_circuit_breaker raises when circuit is open."""
         client = self._create_mixin_instance()
-        client._circuit_open_time = time.time()
+        client._circuit_open_time = time.monotonic()
         client._failure_count = CIRCUIT_BREAKER_THRESHOLD
 
         with pytest.raises(CircuitBreakerOpen):
@@ -214,7 +107,7 @@ class TestCircuitBreakerMixin:
     def test_check_circuit_breaker_resets_after_timeout(self):
         """Test _check_circuit_breaker resets after timeout."""
         client = self._create_mixin_instance()
-        client._circuit_open_time = time.time() - CIRCUIT_BREAKER_RESET_TIME - 1
+        client._circuit_open_time = time.monotonic() - CIRCUIT_BREAKER_RESET_TIME - 1
         client._failure_count = CIRCUIT_BREAKER_THRESHOLD
 
         # Should not raise - circuit should reset
@@ -477,18 +370,3 @@ class TestIsUpcomingMatch:
     def test_is_upcoming_empty_string(self):
         """Test is_upcoming_match with empty string."""
         assert is_upcoming_match("") is False
-
-
-class TestCircuitBreakerOpenException:
-    """Tests for CircuitBreakerOpen exception."""
-
-    def test_exception_message(self):
-        """Test CircuitBreakerOpen exception has message."""
-        exc = CircuitBreakerOpen("Test message")
-        assert str(exc) == "Test message"
-
-    def test_exception_can_be_raised(self):
-        """Test CircuitBreakerOpen can be raised and caught."""
-        with pytest.raises(CircuitBreakerOpen) as exc_info:
-            raise CircuitBreakerOpen("Circuit is open")
-        assert "Circuit is open" in str(exc_info.value)

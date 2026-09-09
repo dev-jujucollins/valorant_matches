@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from rich.progress import Progress
 
 from valorant_matches.scraping.client import AsyncValorantClient, process_matches_async
-from valorant_matches.scraping.matches import ProcessedMatches
+from valorant_matches.scraping.matches import FetchError, ProcessedMatches
 
 logger = logging.getLogger("valorant_matches")
 
@@ -22,6 +22,7 @@ PROGRESS_LABELS = {
 class EventFetchResult:
     """Outcome of fetching and processing one event's matches."""
 
+    error: FetchError | None = None
     total_links: int = 0
     processed: ProcessedMatches = field(
         default_factory=lambda: ProcessedMatches(results=[])
@@ -38,7 +39,7 @@ async def _fetch_event_data(
     async with AsyncValorantClient(cache_enabled=cache_enabled) as client:
         match_links = await client.fetch_event_matches(event_url, event_slug)
         if not match_links:
-            return EventFetchResult()
+            return EventFetchResult(error=client.request_errors.get(event_url))
 
         if show_progress:
             task_label = PROGRESS_LABELS.get(view_mode, "Fetching matches...")

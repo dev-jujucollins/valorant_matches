@@ -6,3 +6,4 @@ lxml>=5.1.0
 python-dotenv>=1.0.0
 requests>=2.32.0
 rich>=13.7.0
+tzdata>=2026.3

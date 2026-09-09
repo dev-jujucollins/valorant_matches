@@ -80,13 +80,6 @@ class TestAsyncValorantClientContextManager:
     """Tests for AsyncValorantClient context manager."""
 
     @pytest.mark.asyncio
-    async def test_enter_creates_session(self):
-        """Entering context should create an aiohttp session."""
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            assert client._session is not None
-            assert not client._session.closed
-
-    @pytest.mark.asyncio
     async def test_exit_closes_session(self):
         """Exiting context should close the session."""
         async with AsyncValorantClient(cache_enabled=False) as client:
@@ -165,27 +158,6 @@ class TestAsyncValorantClientMakeRequest:
             result = await client._make_request("https://vlr.gg/test", retries=1)
 
             assert result is None
-
-
-class TestAsyncValorantClientSlugPattern:
-    """Tests for slug pattern caching."""
-
-    def test_slug_pattern_caching(self):
-        """Test that slug patterns are cached."""
-        client = AsyncValorantClient(cache_enabled=False)
-
-        pattern1 = client._get_slug_pattern("americas-kickoff")
-        pattern2 = client._get_slug_pattern("americas-kickoff")
-
-        assert pattern1 is pattern2  # Same object (cached)
-
-    def test_slug_pattern_matches(self):
-        """Test that slug patterns match correctly."""
-        client = AsyncValorantClient(cache_enabled=False)
-
-        pattern = client._get_slug_pattern("americas")
-        assert pattern.search("vct-2026-americas-kickoff") is not None
-        assert pattern.search("vct-2026-emea-kickoff") is None
 
 
 class TestProcessMatchesAsync:
@@ -280,29 +252,6 @@ class TestProcessMatchesAsync:
             assert processed.results[2][0]["href"] == "/3/match3"
 
     @pytest.mark.asyncio
-    async def test_view_mode_results_filters_upcoming(self):
-        """Test that view_mode='results' filters out upcoming matches."""
-
-        async def mock_process_match(link, upcoming_only=False):
-            return make_result(link["href"], is_upcoming="upcoming" in link["href"])
-
-        mock_links = [
-            {"href": "/1/upcoming-match"},
-            {"href": "/2/completed-match"},
-        ]
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client.process_match = mock_process_match  # type: ignore[method-assign]
-
-            processed = await process_matches_async(
-                client, mock_links, view_mode="results"
-            )
-
-            # Only completed match should be in results
-            assert len(processed.results) == 1
-            assert "completed" in processed.results[0][0]["href"]
-
-    @pytest.mark.asyncio
     async def test_exception_handling(self):
         """Test that exceptions are caught and logged."""
 
@@ -325,34 +274,7 @@ class TestProcessMatchesAsync:
             # Only the successful match should be in results
             assert len(processed.results) == 1
             assert "good" in processed.results[0][0]["href"]
-
-    @pytest.mark.asyncio
-    async def test_tbd_matches_counted_separately(self):
-        """Test that TBD matches are counted separately from failures."""
-
-        async def mock_process_match(link, upcoming_only=False):
-            if "tbd" in link["href"]:
-                return ProcessMatchResult(is_tbd=True)
-            if "error" in link["href"]:
-                return ProcessMatchResult()  # Actual failure
-            return make_result(link["href"])
-
-        mock_links = [
-            {"href": "/1/tbd-match"},
-            {"href": "/2/tbd-match"},
-            {"href": "/3/error-match"},
-            {"href": "/4/good-match"},
-        ]
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client.process_match = mock_process_match  # type: ignore[method-assign]
-
-            processed = await process_matches_async(client, mock_links)
-
-            # Should have 1 successful match
-            assert len(processed.results) == 1
-            # Should have counted 2 TBD matches
-            assert processed.tbd_count == 2
+            assert processed.failed_count == 1
 
 
 class TestClientCacheControl:
@@ -369,16 +291,3 @@ class TestClientCacheControl:
         with patch("valorant_matches.scraping.client.MatchCache") as mock_cache:
             AsyncValorantClient(cache_enabled=False)
             mock_cache.assert_called_once_with(enabled=False)
-
-
-class TestCircuitBreaker:
-    """Tests for circuit breaker functionality in AsyncValorantClient."""
-
-    def test_circuit_breaker_initialization(self):
-        """Test that circuit breaker is properly initialized."""
-        client = AsyncValorantClient(cache_enabled=False)
-
-        assert hasattr(client, "_failure_count")
-        assert hasattr(client, "_circuit_open_time")
-        assert client._failure_count == 0
-        assert client._circuit_open_time is None

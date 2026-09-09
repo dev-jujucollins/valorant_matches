@@ -238,6 +238,19 @@ def run_interactive_mode(
                 continue  # Back to events
 
             fetch_result = fetch_event_data(event.url, event.slug, view_mode)
+            if fetch_result.error:
+                print(formatter.error(f"Fetch failed: {fetch_result.error.message}"))
+                continue
+            if fetch_result.processed.failed_count:
+                print(
+                    formatter.warning(
+                        f"Incomplete results: {fetch_result.processed.failed_count} matches failed."
+                    )
+                )
+                for error in fetch_result.processed.errors[:5]:
+                    print(formatter.error(f"{error.message} ({error.url})"))
+                if not fetch_result.processed.results:
+                    continue
             if not fetch_result.total_links:
                 logger.warning("No matches found for selected event")
                 print(

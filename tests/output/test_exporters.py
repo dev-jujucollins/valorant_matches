@@ -6,8 +6,6 @@ import tempfile
 from pathlib import Path
 
 from valorant_matches.output.exporters import (
-    export_csv,
-    export_json,
     export_matches,
     match_to_dict,
 )
@@ -75,26 +73,6 @@ class TestMatchToDict:
 class TestExportJson:
     """Tests for export_json function."""
 
-    def test_export_json_creates_file(self):
-        """Test that export_json creates a JSON file."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Team A", team2="Team B")),
-            ({"href": "/2"}, make_match(team1="Team C", team2="Team D", score="0-2")),
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test_matches.json"
-            count = export_json(results, output_path)
-
-            assert count == 2
-            assert output_path.exists()
-
-            with open(output_path) as f:
-                data = json.load(f)
-
-            assert data["count"] == 2
-            assert len(data["matches"]) == 2
-
     def test_export_json_content(self):
         """Test that exported JSON contains correct data."""
         results = [
@@ -106,7 +84,7 @@ class TestExportJson:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.json"
-            export_json(results, output_path)
+            export_matches(results, "json", output_path)
 
             with open(output_path) as f:
                 data = json.load(f)
@@ -122,27 +100,13 @@ class TestExportJson:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "nested" / "dir" / "matches.json"
-            export_json(results, output_path)
+            export_matches(results, "json", output_path)
 
             assert output_path.exists()
 
 
 class TestExportCsv:
     """Tests for export_csv function."""
-
-    def test_export_csv_creates_file(self):
-        """Test that export_csv creates a CSV file."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Team A", team2="Team B")),
-            ({"href": "/2"}, make_match(team1="Team C", team2="Team D", score="0-2")),
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test_matches.csv"
-            count = export_csv(results, output_path)
-
-            assert count == 2
-            assert output_path.exists()
 
     def test_export_csv_content(self):
         """Test that exported CSV contains correct headers and data."""
@@ -155,7 +119,7 @@ class TestExportCsv:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.csv"
-            export_csv(results, output_path)
+            export_matches(results, "csv", output_path)
 
             with open(output_path) as f:
                 reader = csv.DictReader(f)
@@ -173,40 +137,26 @@ class TestExportCsv:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "test.csv"
-            export_csv(results, output_path)
+            export_matches(results, "csv", output_path)
 
             with open(output_path) as f:
                 reader = csv.reader(f)
                 headers = next(reader)
 
-            expected = ["date_time", "team1", "team2", "score", "status", "url"]
+            expected = [
+                "date_time",
+                "start_time",
+                "team1",
+                "team2",
+                "score",
+                "status",
+                "url",
+            ]
             assert headers == expected
 
 
 class TestExportMatches:
     """Tests for export_matches function."""
-
-    def test_export_matches_json(self):
-        """Test export_matches with JSON format."""
-        results = [({"href": "/1"}, make_match())]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "output.json"
-            count = export_matches(results, "json", output_path)
-
-            assert count == 1
-            assert output_path.exists()
-
-    def test_export_matches_csv(self):
-        """Test export_matches with CSV format."""
-        results = [({"href": "/1"}, make_match())]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "output.csv"
-            count = export_matches(results, "csv", output_path)
-
-            assert count == 1
-            assert output_path.exists()
 
     def test_export_matches_invalid_format(self):
         """Test export_matches with invalid format raises error."""

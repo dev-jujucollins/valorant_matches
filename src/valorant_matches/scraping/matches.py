@@ -4,7 +4,9 @@ import logging
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Literal
 
 from bs4 import BeautifulSoup
 
@@ -64,6 +66,34 @@ class Match:
     is_live: bool
     url: str
     is_upcoming: bool = False
+    start_time: str | None = None
+
+    @property
+    def status(self) -> Literal["live", "upcoming", "completed"]:
+        """Return the authoritative display status, giving live precedence."""
+        return (
+            "live" if self.is_live else "upcoming" if self.is_upcoming else "completed"
+        )
+
+    @property
+    def starts_at(self) -> datetime | None:
+        """Return an aware timestamp, or None for legacy/invalid data."""
+        if not self.start_time:
+            return None
+        try:
+            value = datetime.fromisoformat(self.start_time)
+            return value if value.tzinfo is not None else None
+        except ValueError:
+            return None
+
+
+@dataclass
+class FetchError:
+    """A fetch or parsing failure with source context."""
+
+    url: str
+    error_type: str
+    message: str
 
 
 @dataclass
@@ -73,6 +103,8 @@ class ProcessMatchResult:
     match: Match | None = None
     is_tbd: bool = False
     cache_hit: bool = False
+    skipped: bool = False
+    error: FetchError | None = None
 
 
 @dataclass
@@ -83,6 +115,8 @@ class ProcessedMatches:
     tbd_count: int = 0
     cache_hits: int = 0
     failed_count: int = 0
+    skipped_count: int = 0
+    errors: list[FetchError] = field(default_factory=list)
 
 
 class CircuitBreakerOpen(Exception):
@@ -112,7 +146,7 @@ class CircuitBreakerMixin:
     def _check_circuit_breaker(self) -> None:
         """Check if circuit breaker allows requests. Raises CircuitBreakerOpen if not."""
         if self._circuit_open_time is not None:
-            elapsed = time.time() - self._circuit_open_time
+            elapsed = time.monotonic() - self._circuit_open_time
             if elapsed < CIRCUIT_BREAKER_RESET_TIME:
                 raise CircuitBreakerOpen(
                     f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
@@ -131,7 +165,7 @@ class CircuitBreakerMixin:
         """Record a failed request, potentially tripping the circuit breaker."""
         self._failure_count += 1
         if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-            self._circuit_open_time = time.time()
+            self._circuit_open_time = time.monotonic()
             logger.error(
                 f"Circuit breaker tripped after {self._failure_count} consecutive failures. "
                 f"Blocking requests for {CIRCUIT_BREAKER_RESET_TIME}s"
@@ -205,6 +239,23 @@ def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
     return "Unknown date", "Unknown time"
 
 
+def extract_start_time(soup: BeautifulSoup) -> str | None:
+    """Read VLR UTC date strings or Unix timestamps as aware ISO values."""
+    for element in soup.select(".moment-tz-convert[data-utc-ts]"):
+        try:
+            raw = str(element.get("data-utc-ts"))
+            try:
+                value = datetime.fromisoformat(raw)
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=UTC)
+                return value.astimezone(UTC).isoformat()
+            except ValueError:
+                return datetime.fromtimestamp(float(raw), UTC).isoformat()
+        except (ValueError, OverflowError, OSError):
+            continue
+    return None
+
+
 def extract_match_data(soup: BeautifulSoup) -> tuple[list[str], str, bool]:
     """Extract team names, score, and live status from match page."""
     teams = extract_teams(soup)
@@ -219,6 +270,10 @@ def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchRe
     if "TBD" in teams:
         return ProcessMatchResult(is_tbd=True)
 
+    if teams == ["Unknown Team 1", "Unknown Team 2"]:
+        return ProcessMatchResult(
+            error=FetchError(match_url, "parse", "Match page is missing team names")
+        )
     match_date, match_time = extract_date_time(soup)
     is_upcoming = is_upcoming_match(score)
     return ProcessMatchResult(
@@ -230,7 +285,8 @@ def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchRe
             score=score,
             is_live=bool(is_live),
             url=match_url,
-            is_upcoming=is_upcoming,
+            is_upcoming=is_upcoming and not is_live,
+            start_time=extract_start_time(soup),
         )
     )
 
@@ -256,6 +312,8 @@ def find_event_match_links(
     match_links = []
     for link in soup.find_all("a", href=True):
         href = link["href"]
+        if not isinstance(href, str):
+            continue
         if not MATCH_URL_PATTERN.match(href):
             continue
         if slug_pattern and not slug_pattern.search(href.lower()):

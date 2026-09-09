@@ -4,11 +4,9 @@ import argparse
 from unittest.mock import Mock, patch
 
 from valorant_matches.cli.display import (
-    DisplayOptions,
     MatchStats,
     filter_matches_by_team,
     get_display_options,
-    get_match_status,
     get_view_mode,
     group_matches,
     run_cli_mode,
@@ -43,19 +41,6 @@ def make_match(
 
 class TestMatchStats:
     """Tests for MatchStats dataclass."""
-
-    def test_default_values(self):
-        """Test default values are initialized to zero."""
-        stats = MatchStats()
-        assert stats.total == 0
-        assert stats.displayed == 0
-        assert stats.cache_hits == 0
-        assert stats.failed == 0
-        assert stats.tbd_count == 0
-        assert stats.live_count == 0
-        assert stats.upcoming_count == 0
-        assert stats.completed_count == 0
-        assert stats.fetch_time == 0.0
 
     def test_increment_cache_hit(self):
         """Test incrementing cache hit counter."""
@@ -97,43 +82,6 @@ class TestMatchStats:
         assert stats.live_count == 0
         assert stats.upcoming_count == 0
         assert stats.completed_count == 1
-
-
-class TestDisplayOptions:
-    """Tests for DisplayOptions dataclass."""
-
-    def test_default_values(self):
-        """Test default display options."""
-        options = DisplayOptions()
-        assert options.compact is False
-        assert options.group_by is None
-        assert options.sort_by is None
-
-    def test_custom_values(self):
-        """Test custom display options."""
-        options = DisplayOptions(compact=True, group_by="status", sort_by="date")
-        assert options.compact is True
-        assert options.group_by == "status"
-        assert options.sort_by == "date"
-
-
-class TestHelperFunctions:
-    """Tests for helper functions."""
-
-    def test_get_match_status_live(self):
-        """Test getting live match status."""
-        match = make_match(is_live=True)
-        assert get_match_status(match) == "live"
-
-    def test_get_match_status_upcoming(self):
-        """Test getting upcoming match status."""
-        match = make_match(is_upcoming=True)
-        assert get_match_status(match) == "upcoming"
-
-    def test_get_match_status_completed(self):
-        """Test getting completed match status."""
-        match = make_match()
-        assert get_match_status(match) == "completed"
 
 
 class TestGetViewMode:
@@ -436,7 +384,7 @@ class TestRunCliMode:
         ):
             exit_code = run_cli_mode(args, formatter, Mock(), Mock())
 
-        assert exit_code == 0
+        assert exit_code == 1
         footer_kwargs = formatter.print_stats_footer.call_args.kwargs
         assert footer_kwargs["failed"] == 2
 

@@ -14,7 +14,20 @@ concurrency:
 jobs:
   quality:
     name: Quality checks
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python: "3.14"
+    runs-on: ${{ matrix.os }}
+    env:
+      VALORANT_MATCHES_HOME: ${{ runner.temp }}/valorant-matches
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -24,7 +37,7 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.29"
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           enable-cache: true
 
       - name: Sync dependencies
@@ -46,6 +59,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-results
+          name: pytest-results-${{ matrix.os }}-${{ matrix.python }}
           path: test-results/junit.xml
           if-no-files-found: ignore
+
+      - name: Build and smoke test installed wheel
+        run: |
+          uv build --wheel
+          uv venv "$RUNNER_TEMP/wheel-smoke"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            smoke_bin="$RUNNER_TEMP/wheel-smoke/Scripts"
+          else
+            smoke_bin="$RUNNER_TEMP/wheel-smoke/bin"
+          fi
+          uv pip install --python "$smoke_bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$smoke_bin/valorant-matches" --help
+          "$smoke_bin/valorant-matches" --quickstart
+          "$smoke_bin/python" -m valorant_matches.cli.app --help
