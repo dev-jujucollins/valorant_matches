@@ -182,6 +182,7 @@ class Formatter:
         fetch_time: float,
         live_count: int = 0,
         tbd_count: int = 0,
+        skipped_count: int = 0,
     ) -> None:
         """Print statistics footer after match display.
 
@@ -190,6 +191,8 @@ class Formatter:
         parts = [
             f"Displayed: {displayed} match{'es' if displayed != 1 else ''}",
         ]
+        if skipped_count > 0:
+            parts.append(self.muted(f"Skipped: {skipped_count}"))
         if tbd_count > 0:
             parts.append(self.muted(f"TBD: {tbd_count}"))
         if cache_hits > 0:

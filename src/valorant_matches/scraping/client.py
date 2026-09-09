@@ -5,6 +5,8 @@ import logging
 import re
 import time
 from dataclasses import asdict
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin
 
 import aiohttp
@@ -21,6 +23,7 @@ from valorant_matches.config import (
 from valorant_matches.scraping.matches import (
     CircuitBreakerMixin,
     CircuitBreakerOpen,
+    FetchError,
     Match,
     ProcessedMatches,
     ProcessMatchResult,
@@ -44,11 +47,11 @@ class AsyncRateLimiter:
     async def acquire(self) -> None:
         """Wait for rate limit before proceeding."""
         async with self._lock:
-            now = time.time()
+            now = time.monotonic()
             elapsed = now - self._last_request
             if elapsed < self._delay:
                 await asyncio.sleep(self._delay - elapsed)
-            self._last_request = time.time()
+            self._last_request = time.monotonic()
 
 
 class AsyncValorantClient(CircuitBreakerMixin):
@@ -61,6 +64,7 @@ class AsyncValorantClient(CircuitBreakerMixin):
         self._slug_pattern_cache: dict[str, re.Pattern] = {}
         self._rate_limiter = AsyncRateLimiter()
         self._session: aiohttp.ClientSession | None = None
+        self.request_errors: dict[str, FetchError] = {}
 
     async def __aenter__(self) -> "AsyncValorantClient":
         """Async context manager entry."""
@@ -92,6 +96,19 @@ class AsyncValorantClient(CircuitBreakerMixin):
         """Check if HTTP status code is retryable."""
         return status >= 500 or status == 429
 
+    def _retry_delay(self, retry_after: str | None, attempt: int) -> float:
+        """Honor delta-seconds and HTTP-date Retry-After values."""
+        if retry_after:
+            try:
+                if retry_after.strip().isdigit():
+                    return float(retry_after)
+                deadline = parsedate_to_datetime(retry_after)
+                if deadline.tzinfo is not None:
+                    return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+            except (ValueError, TypeError, OverflowError):
+                pass
+        return self._calculate_backoff(attempt)
+
     async def _make_request(
         self, url: str, retries: int = MAX_RETRIES
     ) -> BeautifulSoup | None:
@@ -99,15 +116,18 @@ class AsyncValorantClient(CircuitBreakerMixin):
         if not self._session:
             raise RuntimeError("Client not initialized. Use async with context.")
 
+        self.request_errors.pop(url, None)
         try:
             self._check_circuit_breaker()
         except CircuitBreakerOpen as e:
             logger.warning(str(e))
+            self.request_errors[url] = FetchError(url, "circuit", str(e))
             return None
 
         for attempt in range(retries):
             try:
                 await self._rate_limiter.acquire()
+                self._check_circuit_breaker()
                 async with self._session.get(url) as response:
                     if response.status >= 400:
                         if (
@@ -117,11 +137,18 @@ class AsyncValorantClient(CircuitBreakerMixin):
                             logger.warning(
                                 f"Retryable status {response.status} (attempt {attempt + 1})"
                             )
-                            await asyncio.sleep(self._calculate_backoff(attempt))
+                            await asyncio.sleep(
+                                self._retry_delay(
+                                    response.headers.get("Retry-After"), attempt
+                                )
+                            )
                             continue
                         else:
                             logger.warning(f"HTTP error {response.status} for {url}")
                             self._record_failure()
+                            self.request_errors[url] = FetchError(
+                                url, "http", f"HTTP {response.status}"
+                            )
                             return None
 
                     text = await response.text()
@@ -130,12 +157,20 @@ class AsyncValorantClient(CircuitBreakerMixin):
                     soup = await asyncio.to_thread(BeautifulSoup, text, "lxml")
                     return soup
 
+            except CircuitBreakerOpen as e:
+                logger.warning(str(e))
+                self.request_errors[url] = FetchError(url, "circuit", str(e))
+                return None
+
             except TimeoutError:
                 if attempt < retries - 1:
                     logger.warning(f"Timeout (attempt {attempt + 1}/{retries})")
                     await asyncio.sleep(self._calculate_backoff(attempt))
                 else:
                     logger.error(f"Timeout after {retries} attempts for {url}")
+                    self.request_errors[url] = FetchError(
+                        url, "timeout", f"Timed out after {retries} attempts"
+                    )
                     self._record_failure()
                     return None
 
@@ -145,6 +180,7 @@ class AsyncValorantClient(CircuitBreakerMixin):
                     await asyncio.sleep(self._calculate_backoff(attempt))
                 else:
                     logger.error(f"Failed after {retries} attempts: {e}")
+                    self.request_errors[url] = FetchError(url, "network", str(e))
                     self._record_failure()
                     return None
 
@@ -190,14 +226,17 @@ class AsyncValorantClient(CircuitBreakerMixin):
 
             soup = await self._make_request(match_url)
             if not soup:
-                return ProcessMatchResult()
+                return ProcessMatchResult(
+                    error=self.request_errors.get(match_url)
+                    or FetchError(match_url, "fetch", "Could not fetch match page")
+                )
 
             result = build_match_from_soup(soup, match_url)
             if result.is_tbd or not result.match:
                 return result
             match = result.match
-            if upcoming_only and not match.is_upcoming and not match.is_live:
-                return ProcessMatchResult()
+            if upcoming_only and match.status != "upcoming":
+                return ProcessMatchResult(skipped=True)
 
             if self._cache_enabled and not match.is_live and not match.is_upcoming:
                 self.cache.set(match_url, asdict(match))
@@ -206,9 +245,9 @@ class AsyncValorantClient(CircuitBreakerMixin):
 
             return result
 
-        except Exception as e:
+        except (ValueError, TypeError, KeyError, OSError) as e:
             logger.error(f"Error processing match {match_url}: {e}", exc_info=True)
-            return ProcessMatchResult()
+            return ProcessMatchResult(error=FetchError(match_url, "processing", str(e)))
 
 
 async def process_matches_async(
@@ -226,6 +265,8 @@ async def process_matches_async(
     tbd_count = 0
     cache_hits = 0
     failed_count = 0
+    skipped_count = 0
+    errors: list[FetchError] = []
     upcoming_only = view_mode == "upcoming"
     results_only = view_mode == "results"
 
@@ -239,26 +280,46 @@ async def process_matches_async(
     tasks = [process_single(link) for link in match_links]
     completed = await asyncio.gather(*tasks, return_exceptions=True)
 
-    for item in completed:
+    for original_link, item in zip(match_links, completed, strict=True):
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
             failed_count += 1
+            errors.append(
+                FetchError(
+                    urljoin(BASE_URL, original_link["href"]), "processing", str(item)
+                )
+            )
             continue
         link, result = item
-        if result.is_tbd:
+        if result.skipped:
+            skipped_count += 1
+        elif result.is_tbd:
             tbd_count += 1
         elif result.match:
             if result.cache_hit:
                 cache_hits += 1
-            if results_only and result.match.is_upcoming:
+            if (results_only and result.match.status != "completed") or (
+                upcoming_only and result.match.status != "upcoming"
+            ):
+                skipped_count += 1
                 continue
             results.append((link, result.match))
         else:
             failed_count += 1
+            errors.append(
+                result.error
+                or FetchError(
+                    urljoin(BASE_URL, link["href"]),
+                    "processing",
+                    "No match data returned",
+                )
+            )
 
     return ProcessedMatches(
         results=results,
         tbd_count=tbd_count,
         cache_hits=cache_hits,
         failed_count=failed_count,
+        skipped_count=skipped_count,
+        errors=errors,
     )

@@ -40,7 +40,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 2. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/valorant_matches.git
+git clone https://github.com/dev-jujucollins/valorant_matches.git
 cd valorant_matches
 ```
 
@@ -274,3 +274,38 @@ Preview:
 <img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 02 AM" src="https://github.com/user-attachments/assets/ddbf326b-9348-48dd-a856-619cf2787a78" />
 <img width="929" height="625" alt="Screenshot 2025-11-09 at 10 21 43 AM" src="https://github.com/user-attachments/assets/9dd2385c-9ab8-43b4-ad53-a23fc038b239" />
 <img width="929" height="693" alt="Screenshot 2025-11-09 at 10 24 50 AM" src="https://github.com/user-attachments/assets/951e69dd-f5c7-4345-be0b-adb92b180b42" />
+
+## Freshness, timestamps, and watch mode
+
+```bash
+uv run valorant-matches -r americas --watch --interval 60
+uv run valorant-matches -r emea --today --timezone America/Los_Angeles
+uv run valorant-matches -r champions --sort date --timezone UTC
+```
+
+`--watch` refreshes until Ctrl+C (exit 130), shows score/status changes and the
+last fully successful update, and retries after incomplete refreshes. The interval
+is a delay **after** each fetch finishes (default 60 seconds, minimum 10).
+Existing request rate limiting and completed-match caching still apply; use
+`--no-cache` for fresh completed scores too. Watch requires a region or saved
+default-region and cannot combine with export or interactive mode.
+
+`--results` includes completed matches only; `--upcoming` includes scheduled
+matches only. Use the default all view to include live matches. Filtered matches
+are counted separately from failures.
+
+Match start times use the source UTC timestamp. Display defaults to the local
+timezone; `--timezone` accepts an IANA name. `--today` uses that timezone's date
+and excludes matches without a known timestamp. Older markup without timestamps
+keeps its original display text; sorting falls back to its date/time text.
+JSON and CSV exports include `start_time` (ISO 8601 UTC, null/empty if unknown).
+The cache schema has changed; older cached entries are refetched automatically.
+
+Exit 0 means a successful query, including a genuinely empty schedule or filter.
+Exit 1 means discovery selection, fetching, parsing, or export failed. Partial
+results remain visible/exportable but return 1; errors include the affected URL.
+Invalid CLI arguments return 2. HTTP retries honor `Retry-After` when provided.
+
+CI tests Python 3.11–3.14 on Linux, plus a Windows smoke/test job. Each job builds
+and installs the wheel into a clean environment and checks the installed CLI from
+outside the checkout. Parser fixtures live in `tests/fixtures/vlr/`.

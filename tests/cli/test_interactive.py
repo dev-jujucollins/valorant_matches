@@ -31,3 +31,32 @@ class TestInteractiveSuggestions:
         suggestions = _suggest_team_names(results, "Sentinal")
 
         assert "Sentinels" in suggestions
+
+
+def test_interactive_fetch_error_is_not_empty_schedule(capsys) -> None:
+    """Failed requests should give a retryable error, not an empty schedule."""
+    from types import SimpleNamespace
+    from unittest.mock import Mock, patch
+
+    from valorant_matches.cli.interactive import run_interactive_mode
+    from valorant_matches.output.formatter import Formatter
+    from valorant_matches.scraping.matches import FetchError
+    from valorant_matches.scraping.runner import EventFetchResult
+
+    discovery = Mock()
+    discovery.discover_events.return_value = [
+        SimpleNamespace(
+            name="Test event", status="ongoing", url="https://vlr.gg/event", slug="test"
+        )
+    ]
+    with (
+        patch("builtins.input", side_effect=["1", "1", "q"]),
+        patch(
+            "valorant_matches.cli.interactive.fetch_event_data",
+            return_value=EventFetchResult(error=FetchError("url", "http", "HTTP 503")),
+        ),
+    ):
+        assert run_interactive_mode(Formatter(), discovery) == 0
+    output = capsys.readouterr().out
+    assert "Fetch failed: HTTP 503" in output
+    assert "No matches found" not in output

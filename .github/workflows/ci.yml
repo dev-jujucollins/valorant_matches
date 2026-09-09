@@ -12,9 +12,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Quality checks
-    runs-on: ubuntu-latest
+  tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - os: windows-latest
+            python: "3.14"
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -24,8 +37,11 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.29"
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           enable-cache: true
+
+      - name: Set runtime data directory
+        run: echo "VALORANT_MATCHES_HOME=$RUNNER_TEMP/valorant-matches" >> "$GITHUB_ENV"
 
       - name: Sync dependencies
         run: uv sync --locked
@@ -46,6 +62,34 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-results
+          name: pytest-results-${{ matrix.os }}-${{ matrix.python }}
           path: test-results/junit.xml
           if-no-files-found: ignore
+
+      - name: Build and smoke test installed wheel
+        run: |
+          uv build --wheel
+          uv venv "$RUNNER_TEMP/wheel-smoke"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            smoke_bin="$RUNNER_TEMP/wheel-smoke/Scripts"
+            smoke_python="$smoke_bin/python.exe"
+          else
+            smoke_bin="$RUNNER_TEMP/wheel-smoke/bin"
+            smoke_python="$smoke_bin/python"
+          fi
+          uv pip install --python "$smoke_python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$smoke_bin/valorant-matches" --help
+          "$smoke_bin/valorant-matches" --quickstart
+          "$smoke_python" -m valorant_matches.cli.app --help
+
+  quality:
+    name: Quality checks
+    needs: tests
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix job to pass
+        env:
+          TEST_RESULT: ${{ needs.tests.result }}
+        run: test "$TEST_RESULT" = "success"

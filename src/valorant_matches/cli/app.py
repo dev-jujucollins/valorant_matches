@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from valorant_matches.cli.display import run_cli_mode
 from valorant_matches.cli.interactive import run_interactive_mode
@@ -187,7 +188,34 @@ Available regions:
         action="store_true",
         help="Enter interactive mode after CLI results",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--today",
+        action="store_true",
+        help="Only matches starting today in the selected timezone",
+    )
+    parser.add_argument("--timezone", help="IANA timezone (default: local timezone)")
+    parser.add_argument(
+        "--watch", action="store_true", help="Refresh matches until Ctrl+C"
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Seconds between watch refreshes (minimum 10, default 60)",
+    )
+    args = parser.parse_args()
+    if args.upcoming and args.results:
+        parser.error("--upcoming and --results cannot be combined")
+    if args.interval < 10:
+        parser.error("--interval must be at least 10 seconds")
+    if args.watch and (args.export or args.interactive):
+        parser.error("--watch cannot be combined with --export or --interactive")
+    if args.timezone:
+        try:
+            ZoneInfo(args.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            parser.error(f"Unknown timezone: {args.timezone}")
+    return args
 
 
 def get_completion_script(shell: str) -> str:
@@ -214,6 +242,10 @@ def get_completion_script(shell: str) -> str:
         "--print-completion",
         "--interactive",
         "--help",
+        "--today",
+        "--timezone",
+        "--watch",
+        "--interval",
     ]
     words = " ".join(options)
     regions = " ".join(REGION_CHOICES)
@@ -553,6 +585,14 @@ def main() -> None:
     force_refresh = getattr(args, "refresh", False)
     profile = config_manager.load()
     apply_profile_defaults(args, profile)
+
+    if (args.watch or args.today or args.timezone) and not args.region:
+        print(
+            formatter.error(
+                "--watch, --today, and --timezone require --region or a saved default-region."
+            )
+        )
+        sys.exit(2)
 
     if args.doctor:
         exit_code = run_doctor(formatter, discovery)

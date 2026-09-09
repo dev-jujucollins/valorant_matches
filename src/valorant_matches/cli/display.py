@@ -4,8 +4,10 @@ import argparse
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from valorant_matches.output.exporters import export_matches
 from valorant_matches.output.formatter import Formatter
@@ -90,11 +92,7 @@ class DisplayOptions:
 
 def get_match_status(match: Match) -> str:
     """Determine match status from Match object."""
-    if match.is_live:
-        return "live"
-    elif match.is_upcoming:
-        return "upcoming"
-    return "completed"
+    return match.status
 
 
 def _parse_date(date_str: str) -> datetime:
@@ -111,19 +109,118 @@ def _parse_date(date_str: str) -> datetime:
     ]
     for fmt in formats:
         try:
-            parsed = datetime.strptime(date_str, fmt)
+            parsed = datetime.strptime(
+                date_str if "%Y" in fmt else f"{date_str} 2000",
+                fmt if "%Y" in fmt else f"{fmt} %Y",
+            )
         except ValueError:
             continue
         if "%Y" not in fmt:
             # No year in the source: pick the year that puts the date closest
             # to today, so a Jan match listed in December sorts as next year.
             today = datetime.now()
-            candidates = [
-                parsed.replace(year=today.year + offset) for offset in (-1, 0, 1)
-            ]
+            candidates = []
+            for offset in range(-4, 5):
+                try:
+                    candidates.append(parsed.replace(year=today.year + offset))
+                except ValueError:
+                    continue
             parsed = min(candidates, key=lambda d: abs(d - today))
         return parsed
     return datetime.max
+
+
+def _match_sort_key(match: Match) -> datetime:
+    """Prefer source timestamps; keep legacy display dates sortable."""
+    if match.starts_at:
+        return match.starts_at.astimezone(UTC)
+    date = _parse_date(match.date)
+    for pattern in ("%I:%M %p", "%H:%M"):
+        try:
+            clock = datetime.strptime(match.time, pattern)
+            date = date.replace(hour=clock.hour, minute=clock.minute)
+            break
+        except ValueError:
+            continue
+    return date.replace(tzinfo=UTC)
+
+
+def localize_matches(
+    results: list[tuple[dict, Match]], timezone: str | None, today_only: bool
+) -> list[tuple[dict, Match]]:
+    """Format known instants locally and optionally filter the local date."""
+    zone = ZoneInfo(timezone) if timezone else None
+    today = datetime.now().astimezone(zone).date()
+    localized = []
+    for link, match in results:
+        instant = match.starts_at
+        if instant is None:
+            if not today_only:
+                localized.append((link, match))
+            continue
+        local = instant.astimezone(zone)
+        if today_only and local.date() != today:
+            continue
+        localized.append(
+            (
+                link,
+                replace(
+                    match,
+                    date=local.strftime("%B %d, %Y"),
+                    time=local.strftime("%I:%M %p %Z"),
+                ),
+            )
+        )
+    return localized
+
+
+@dataclass
+class WatchState:
+    """Keep the previous successful match values across refreshes."""
+
+    previous: dict[str, tuple[str, str]] = field(default_factory=dict)
+    last_success: str | None = None
+
+    def report(self, results: list[tuple[dict, Match]]) -> None:
+        """Print score/status changes without losing unseen previous values."""
+        for _, match in results:
+            current = (match.score, match.status)
+            before = self.previous.get(match.url)
+            if before is not None and before != current:
+                print(
+                    f"Changed: {match.team1} vs {match.team2}: "
+                    f"{before[0]} ({before[1]}) → {current[0]} ({current[1]})"
+                )
+            self.previous[match.url] = current
+
+
+def run_cli_mode(
+    args: argparse.Namespace,
+    formatter: Formatter,
+    discovery: EventDiscovery,
+    run_interactive_func: Callable[[Formatter, EventDiscovery], int],
+) -> int:
+    """Run once or refresh until interrupted, retaining freshness metadata."""
+    if not getattr(args, "watch", False):
+        return _run_cli_once(args, formatter, discovery, run_interactive_func)
+    state = WatchState()
+    print("Watching matches. Press Ctrl+C to stop.")
+    try:
+        while True:
+            code = _run_cli_once(
+                args, formatter, discovery, run_interactive_func, state
+            )
+            if code == 0:
+                state.last_success = (
+                    datetime.now().astimezone().isoformat(timespec="seconds")
+                )
+            else:
+                print("Refresh incomplete; retrying after the interval.")
+            print(f"Last successful update: {state.last_success or 'none yet'}")
+            time.sleep(getattr(args, "interval", 60))
+    except KeyboardInterrupt:
+        print("Watch stopped.")
+        return 130
 
 
 def sort_matches(
@@ -134,7 +231,7 @@ def sort_matches(
         return results
 
     if sort_by == "date":
-        return sorted(results, key=lambda x: _parse_date(x[1].date))
+        return sorted(results, key=lambda x: _match_sort_key(x[1]))
     elif sort_by == "team":
         return sorted(results, key=lambda x: x[1].team1.lower())
     return results
@@ -259,11 +356,12 @@ def display_results(
     stats.displayed = len(results)
 
 
-def run_cli_mode(
+def _run_cli_once(
     args: argparse.Namespace,
     formatter: Formatter,
     discovery: EventDiscovery,
-    run_interactive_func,
+    run_interactive_func: Callable[[Formatter, EventDiscovery], int],
+    watch_state: WatchState | None = None,
 ) -> int:
     """Run in CLI mode with command line arguments.
 
@@ -273,7 +371,7 @@ def run_cli_mode(
         discovery: EventDiscovery instance
         run_interactive_func: Function to run interactive mode if requested
     """
-    start_time = time.time()
+    start_time = time.monotonic()
     stats = MatchStats()
 
     cache_enabled = not args.no_cache
@@ -307,7 +405,11 @@ def run_cli_mode(
         view_mode=view_mode,
         cache_enabled=cache_enabled,
     )
-    if not fetch_result.total_links:
+    if fetch_result.error:
+        error = fetch_result.error
+        print(formatter.error(f"{error.error_type}: {error.message} ({error.url})"))
+        return 1
+    if not fetch_result.total_links and not getattr(args, "export", None):
         print(f"\n{formatter.warning('No matches found for the selected event page.')}")
         print(
             f"{formatter.muted('The event may not have posted matches yet. Try --refresh or check another region.')}\n"
@@ -319,13 +421,29 @@ def run_cli_mode(
     stats.tbd_count = processed.tbd_count
     stats.cache_hits = processed.cache_hits
     stats.failed = processed.failed_count
-    results = processed.results
+    stats.errors = [
+        MatchError(e.url, e.error_type, e.message) for e in processed.errors
+    ]
+    results = localize_matches(
+        processed.results,
+        getattr(args, "timezone", None),
+        getattr(args, "today", False),
+    )
+    if stats.failed and not results:
+        print(
+            formatter.error("Match retrieval incomplete; no usable matches returned.")
+        )
+        print_error_summary(formatter, stats)
+        return 1
 
     # Apply team filter if specified
     team_filter = getattr(args, "team", None)
     if team_filter:
         results = filter_matches_by_team(results, team_filter)
         logger.info(f"Filtered to {len(results)} matches for team '{team_filter}'")
+
+    if watch_state is not None:
+        watch_state.report(results)
 
     # Log the actual number of matches being displayed
     match_type = {"upcoming": "upcoming", "results": "completed", "all": ""}
@@ -337,13 +455,24 @@ def run_cli_mode(
     export_format = getattr(args, "export", None)
     if export_format:
         output_path = getattr(args, "output", None)
-        count = export_matches(results, export_format, output_path)
+        try:
+            count = export_matches(
+                sort_matches(results, getattr(args, "sort", None)),
+                export_format,
+                output_path,
+            )
+        except OSError as error:
+            print(formatter.error(f"Export failed: {error}"))
+            return 1
+        print_error_summary(formatter, stats)
         final_path = output_path or f"matches.{export_format}"
         print(f"{formatter.success(f'Exported {count} matches to {final_path}')}\n")
-        return 0  # Exit after export
+        return 1 if stats.failed else 0  # Partial exports are not complete success
 
     if not results:
-        if team_filter:
+        if getattr(args, "today", False):
+            print(formatter.warning("No matches with known start times today."))
+        elif team_filter:
             print(
                 f"\n{formatter.warning(f'No matches found for team filter: {team_filter}')}"
             )
@@ -375,7 +504,7 @@ def run_cli_mode(
         options = get_display_options(args)
         display_results(results, formatter, options, stats)
 
-    stats.fetch_time = time.time() - start_time
+    stats.fetch_time = time.monotonic() - start_time
 
     print()
     formatter.print_stats_footer(
@@ -385,6 +514,7 @@ def run_cli_mode(
         tbd_count=stats.tbd_count,
         fetch_time=stats.fetch_time,
         live_count=stats.live_count,
+        skipped_count=processed.skipped_count,
     )
 
     # Print error summary if there were errors
@@ -394,4 +524,4 @@ def run_cli_mode(
         print(f"\n{formatter.muted('─' * 40)}")
         print(f"{formatter.info('Entering interactive mode...', bold=True)}\n")
         return run_interactive_func(formatter, discovery)
-    return 0
+    return 1 if stats.failed else 0
