@@ -196,6 +196,12 @@ def extract_score(soup: BeautifulSoup) -> str:
         if countdown:
             return countdown
 
+    # Unscheduled Champions matches have a dash placeholder, not a score.
+    if soup.select_one(".match-header-vs-placeholder") and not extract_live_status(
+        soup
+    ):
+        return "Match has not started yet."
+
     # Then check for completed/live match scores
     for tag, class_name in SCORE_SELECTORS:
         score_elem = soup.find(tag, class_=class_name)
@@ -224,6 +230,12 @@ def extract_live_status(soup: BeautifulSoup) -> bool:
 
 def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
     """Extract match date and time with fallback selectors."""
+    header = soup.select_one(".match-header-date")
+    if header and "time tbd" in header.get_text(" ", strip=True).lower():
+        date_elem = header.select_one(".moment-tz-convert")
+        date = date_elem.get_text(" ", strip=True) if date_elem else "Unknown date"
+        tentative = "tentative" in header.get_text(" ", strip=True).lower()
+        return date, "Time TBD (date tentative)" if tentative else "Time TBD"
     for tag, class_name in DATE_SELECTORS:
         date_elem = soup.find(tag, class_=class_name)
         if date_elem:
@@ -241,6 +253,9 @@ def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
 
 def extract_start_time(soup: BeautifulSoup) -> str | None:
     """Read VLR UTC date strings or Unix timestamps as aware ISO values."""
+    header = soup.select_one(".match-header-date")
+    if header and "time tbd" in header.get_text(" ", strip=True).lower():
+        return None  # The source attribute is a placeholder, not a scheduled instant.
     for element in soup.select(".moment-tz-convert[data-utc-ts]"):
         try:
             raw = str(element.get("data-utc-ts"))
@@ -293,7 +308,11 @@ def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchRe
 
 def should_use_cached_match(match: Match) -> bool:
     """Return True when cached match data is safe to display."""
-    return not match.is_live and not match.is_upcoming
+    return (
+        not match.is_live
+        and not match.is_upcoming
+        and not is_upcoming_match(match.score)
+    )
 
 
 def extract_event_slug(event_url: str) -> str | None:
@@ -338,6 +357,9 @@ def format_eta(score: str) -> str:
 
 def is_upcoming_match(score: str) -> bool:
     """Determine if a match is upcoming based on its score text."""
-    return score.lower().startswith("match has not started") or bool(
-        COUNTDOWN_PATTERN.match(score)
+    normalized = " ".join(score.lower().split())
+    return (
+        normalized in {"tbd", "tbd –", "tbd —", "tbd -", "–", "—", "-"}
+        or normalized.startswith("match has not started")
+        or bool(COUNTDOWN_PATTERN.match(score))
     )
