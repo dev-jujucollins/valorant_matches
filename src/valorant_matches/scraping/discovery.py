@@ -1,9 +1,14 @@
 # Auto-discovery of VCT events from vlr.gg.
 
+import json
 import logging
+import math
 import re
+import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
@@ -17,6 +22,7 @@ from requests.exceptions import (
 )
 
 from valorant_matches.config import (
+    APP_DIR,
     BASE_URL,
     HEADERS,
     MAX_RETRIES,
@@ -29,8 +35,8 @@ logger = logging.getLogger("valorant_matches")
 # Cache TTL for discovered events (24 hours)
 EVENT_CACHE_TTL = 86400
 
-# VCT series ID for current year (2026)
-VCT_SERIES_ID = "86"
+# VLR's VCT tier covers current and older seasons without a yearly series ID.
+VCT_EVENTS_URL = f"{BASE_URL}/events/?tier=60"
 
 # Region mappings for CLI aliases
 REGION_ALIASES: dict[str, list[str]] = {
@@ -44,15 +50,16 @@ REGION_ALIASES: dict[str, list[str]] = {
 
 # Pre-compiled regex patterns for performance
 VCT_SLUG_PATTERN = re.compile(r"vct-(\d{4})-([^-]+)-(.+)")
+TOUR_SLUG_PATTERN = re.compile(r"champions-tour-(\d{4})-([^-]+)-(.+)")
 CHAMPIONS_SLUG_PATTERN = re.compile(r"valorant-(champions|masters)-(\d{4})")
 MASTERS_CITY_PATTERN = re.compile(r"valorant-masters-([^-]+)-(\d{4})")
 EVENT_ID_PATTERN = re.compile(r"/event/(\d+)/([^/]+)")
 EVENT_LINK_PATTERN = re.compile(r"^/event/\d+/")
 EVENT_NAME_PATTERN = re.compile(
-    r"((?:VCT \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)"
+    r"((?:VCT \d{4}:|Champions Tour \d{4}:|Valorant (?:Champions|Masters))[^$\d]+)"
 )
 OFFICIAL_VCT_NAME_PATTERN = re.compile(
-    r"^(?:VCT \d{4}:|Valorant (?:Champions|Masters)(?:\s+[A-Za-z]+)?\s+\d{4}\b)",
+    r"^(?:VCT \d{4}:|Champions Tour \d{4}:|Valorant (?:Champions|Masters)(?:\s+[A-Za-z]+)?\s+\d{4}\b)",
     re.IGNORECASE,
 )
 
@@ -73,7 +80,11 @@ class DiscoveredEvent:
 class EventDiscovery:
     """Discovers VCT events from vlr.gg."""
 
-    def __init__(self):
+    def __init__(self, season: int | None = None, snapshot_dir: Path = APP_DIR) -> None:
+        self.season = season or datetime.now().year
+        self.snapshot_path = snapshot_dir / f"events-{self.season}.json"
+        self.is_stale = False
+        self.last_updated: float | None = None
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
@@ -87,6 +98,67 @@ class EventDiscovery:
         self.session.mount("http://", adapter)
 
         self._cache: TTLCache = TTLCache(maxsize=10, ttl=EVENT_CACHE_TTL)
+
+    def _load_snapshot(self) -> list[DiscoveredEvent]:
+        """Load last successful discovery for this season."""
+        try:
+            payload = json.loads(self.snapshot_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("season") != self.season:
+                return []
+            timestamp = payload["updated_at"]
+            raw_events = payload["events"]
+            if (
+                not isinstance(timestamp, (int, float))
+                or isinstance(timestamp, bool)
+                or not math.isfinite(timestamp)
+                or not isinstance(raw_events, list)
+            ):
+                return []
+            events = [DiscoveredEvent(**event) for event in raw_events]
+            if not all(
+                isinstance(event.name, str)
+                and isinstance(event.event_id, str)
+                and event.event_id.isdigit()
+                and isinstance(event.url, str)
+                and event.url.startswith(f"{BASE_URL}/event/matches/")
+                and isinstance(event.slug, str)
+                and isinstance(event.status, str)
+                and isinstance(event.dates, str)
+                and isinstance(event.region, str)
+                and re.search(rf"\b{self.season}\b", event.name)
+                for event in events
+            ):
+                return []
+            self.last_updated = timestamp
+            return events
+        except (OSError, ValueError, TypeError, KeyError):
+            return []
+
+    def _save_snapshot(self, events: list[DiscoveredEvent]) -> None:
+        """Persist successful discovery atomically."""
+        try:
+            self.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.snapshot_path.parent,
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(
+                    {
+                        "season": self.season,
+                        "updated_at": time.time(),
+                        "events": [asdict(event) for event in events],
+                    },
+                    handle,
+                )
+            temp_path.replace(self.snapshot_path)
+        except OSError as error:
+            logger.warning("Could not save event snapshot: %s", error)
+            if "temp_path" in locals():
+                temp_path.unlink(missing_ok=True)
 
     def _is_retryable_error(
         self, error: Exception, response: requests.Response | None = None
@@ -136,6 +208,11 @@ class EventDiscovery:
             stage = stage.replace("-", " ").title()
             return f"VCT {year}: {region} {stage}"
 
+        tour_match = TOUR_SLUG_PATTERN.match(slug)
+        if tour_match:
+            year, region, stage = tour_match.groups()
+            return f"Champions Tour {year}: {region.capitalize()} {stage.replace('-', ' ').title()}"
+
         # Pattern: valorant-champions-2026 -> Valorant Champions 2026
         champ_match = CHAMPIONS_SLUG_PATTERN.match(slug)
         if champ_match:
@@ -163,7 +240,9 @@ class EventDiscovery:
             return "china"
         elif re.search(r"\bvalorant champions \d{4}\b", name_lower):
             return "champions"
-        elif re.search(r"\bvalorant masters\b", name_lower):
+        elif re.search(
+            r"\b(?:valorant masters|champions tour \d{4}: masters)\b", name_lower
+        ):
             return "masters"
         return "other"
 
@@ -187,16 +266,43 @@ class EventDiscovery:
         events = []
 
         # Fetch VCT events page
-        url = f"{BASE_URL}/events/?series_id={VCT_SERIES_ID}"
-        soup = self._make_request(url)
+        soup = self._make_request(VCT_EVENTS_URL)
         if not soup:
-            logger.warning("Failed to fetch events page, using cache if available")
+            logger.warning("Failed to fetch events page, using saved discovery")
             if cache_key in self._cache:
+                self.is_stale = True
                 return self._cache[cache_key]
-            return []
+            saved = self._load_snapshot()
+            self.is_stale = bool(saved)
+            return saved
 
         # Find all event cards - they're in anchor tags with /event/ hrefs
         event_links = soup.find_all("a", href=EVENT_LINK_PATTERN)
+        if self.season < datetime.now().year:
+            # VLR paginates older seasons. Stop once cards from an earlier
+            # season appear, or when pages stop adding new events.
+            seen_hrefs = {str(link.get("href")) for link in event_links}
+            for page in range(2, 8):
+                years = [
+                    int(year)
+                    for href in seen_hrefs
+                    for year in re.findall(r"(?<!\d)20\d{2}(?!\d)", href)
+                ]
+                if any(year < self.season for year in years):
+                    break
+                older_page = self._make_request(f"{VCT_EVENTS_URL}&page={page}")
+                if not older_page:
+                    break
+                more_links = older_page.find_all("a", href=EVENT_LINK_PATTERN)
+                fresh_links = [
+                    link
+                    for link in more_links
+                    if str(link.get("href")) not in seen_hrefs
+                ]
+                if not fresh_links:
+                    break
+                event_links.extend(fresh_links)
+                seen_hrefs.update(str(link.get("href")) for link in fresh_links)
 
         seen_ids: set[str] = set()
         for link in event_links:
@@ -228,6 +334,8 @@ class EventDiscovery:
 
             # Filter for VCT events only (not Challengers, Game Changers, etc.)
             if not self._is_vct_international(name):
+                continue
+            if not re.search(rf"\b{self.season}\b", name):
                 continue
 
             # Determine status from link text content
@@ -262,7 +370,14 @@ class EventDiscovery:
         events.sort(key=lambda e: int(e.event_id))
 
         # Cache results (TTLCache handles expiration automatically)
+        if not events:
+            saved = self._load_snapshot()
+            self.is_stale = bool(saved)
+            return saved
         self._cache[cache_key] = events
+        self.is_stale = False
+        self.last_updated = time.time()
+        self._save_snapshot(events)
         logger.info(f"Discovered {len(events)} VCT events")
 
         return events

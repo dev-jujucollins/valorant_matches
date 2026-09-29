@@ -5,14 +5,15 @@ import logging
 from difflib import get_close_matches
 
 from valorant_matches.cli.display import (
-    filter_matches_by_team,
-    format_match_full,
-    group_matches,
-    sort_matches,
+    DisplayOptions,
+    MatchStats,
+    display_results,
+    prepare_matches,
+    saved_discovery_notice,
 )
-from valorant_matches.config import EVENTS
 from valorant_matches.output.formatter import Formatter
-from valorant_matches.scraping.discovery import DiscoveredEvent, EventDiscovery
+from valorant_matches.profile import UserProfile
+from valorant_matches.scraping.discovery import EventDiscovery
 from valorant_matches.scraping.matches import Match
 from valorant_matches.scraping.runner import fetch_event_data
 
@@ -25,6 +26,7 @@ SHORTCUTS = {
     "f": "Filter by team",
     "s": "Sort matches (date/team)",
     "g": "Group matches (date/status)",
+    "v": "Toggle favorite-team filter",
     "h": "Show this help",
 }
 
@@ -39,7 +41,7 @@ def print_shortcuts(formatter: Formatter) -> None:
     print()
 
 
-def select_view_mode(formatter: Formatter) -> str | None:
+def select_view_mode(formatter: Formatter, default: str = "all") -> str | None:
     """Show the view mode menu. Returns a view mode, or None for 'back'."""
     print(f"\n{formatter.info(' View Mode:', bold=True)}")
     print(f"{formatter.primary('1.', bold=True)} {formatter.highlight('All Matches')}")
@@ -50,10 +52,12 @@ def select_view_mode(formatter: Formatter) -> str | None:
         f"{formatter.primary('3.', bold=True)} {formatter.highlight('Upcoming Only')} {formatter.muted('(scheduled matches)')}"
     )
     print(f"{formatter.primary('4.', bold=True)} {formatter.muted('Back to Events')}\n")
-    choice = input(f"{formatter.info('Select view mode:', bold=True)} ").strip()
+    choice = input(
+        f"{formatter.info(f'Select view mode (Enter for {default}):', bold=True)} "
+    ).strip()
     if choice == "4":
         return None
-    return VIEW_MODE_OPTIONS.get(choice, "all")
+    return VIEW_MODE_OPTIONS.get(choice, default)
 
 
 def _print_next_step_hint(formatter: Formatter, hint: str) -> None:
@@ -76,6 +80,9 @@ def _suggest_team_names(
 def run_interactive_mode(
     formatter: Formatter,
     discovery: EventDiscovery,
+    profile: UserProfile | None = None,
+    cache_enabled: bool | None = None,
+    timezone: str | None = None,
 ) -> int:
     """Run in interactive mode with menus.
 
@@ -84,11 +91,15 @@ def run_interactive_mode(
         discovery: EventDiscovery instance
     """
     force_refresh = False
+    profile = profile or UserProfile()
+    cache_enabled = profile.cache_enabled if cache_enabled is None else cache_enabled
+    formatter.set_favorite_teams(profile.favorite_teams)
 
     # Current filter/sort/group state
     current_team_filter: str | None = None
-    current_sort: str | None = None
-    current_group: str | None = None
+    current_sort: str | None = profile.default_sort
+    current_group: str | None = profile.default_group_by
+    current_favorites_only = False
     last_loaded_results: list[tuple[dict, Match]] = []
 
     while True:
@@ -98,20 +109,11 @@ def run_interactive_mode(
             force_refresh = False  # Reset after use
 
             if not events:
-                # Fallback to hardcoded events
-                logger.warning("No events discovered, using fallback config")
-                events = [
-                    DiscoveredEvent(
-                        name=e.name,
-                        url=e.url,
-                        event_id=e.series_id,
-                        slug="",
-                        status="unknown",
-                        dates="",
-                        region="",
-                    )
-                    for e in EVENTS.values()
-                ]
+                print(formatter.error("No events found for selected season."))
+                return 1
+            notice = saved_discovery_notice(discovery)
+            if notice:
+                print(formatter.warning(notice))
 
             # Display event menu
             print(f"\n{formatter.info(' Available Events:', bold=True)}")
@@ -128,7 +130,12 @@ def run_interactive_mode(
             print()
 
             # Show active filters
-            if current_team_filter or current_sort or current_group:
+            if (
+                current_team_filter
+                or current_sort
+                or current_group
+                or current_favorites_only
+            ):
                 active = []
                 if current_team_filter:
                     active.append(f"team={current_team_filter}")
@@ -136,6 +143,8 @@ def run_interactive_mode(
                     active.append(f"sort={current_sort}")
                 if current_group:
                     active.append(f"group={current_group}")
+                if current_favorites_only:
+                    active.append("favorites")
                 print(f"{formatter.muted('Active: ' + ', '.join(active))}\n")
 
             selected = (
@@ -161,6 +170,20 @@ def run_interactive_mode(
 
             if selected == "h":
                 print_shortcuts(formatter)
+                continue
+
+            if selected == "v":
+                if not profile.favorite_teams:
+                    print(formatter.warning("No favorite teams saved."))
+                else:
+                    current_favorites_only = not current_favorites_only
+                    print(
+                        formatter.info(
+                            "Favorite filter on"
+                            if current_favorites_only
+                            else "Favorite filter off"
+                        )
+                    )
                 continue
 
             if selected == "f":
@@ -233,11 +256,13 @@ def run_interactive_mode(
                 continue
 
             # Show view mode menu before any network work
-            view_mode = select_view_mode(formatter)
+            view_mode = select_view_mode(formatter, profile.default_view_mode)
             if view_mode is None:
                 continue  # Back to events
 
-            fetch_result = fetch_event_data(event.url, event.slug, view_mode)
+            fetch_result = fetch_event_data(
+                event.url, event.slug, view_mode, cache_enabled=cache_enabled
+            )
             if fetch_result.error:
                 print(formatter.error(f"Fetch failed: {fetch_result.error.message}"))
                 continue
@@ -261,16 +286,15 @@ def run_interactive_mode(
                 )
                 continue
 
-            results = fetch_result.processed.results
-            last_loaded_results = results[:]
-
-            # Apply team filter if set
-            if current_team_filter:
-                results = filter_matches_by_team(results, current_team_filter)
-
-            # Apply sorting if set
-            if current_sort:
-                results = sort_matches(results, current_sort)
+            last_loaded_results = fetch_result.processed.results[:]
+            results = prepare_matches(
+                last_loaded_results,
+                timezone=timezone,
+                team=current_team_filter,
+                favorite_teams=profile.favorite_teams,
+                favorites_only=current_favorites_only,
+                sort_by=current_sort,
+            )
 
             # Log the actual number of matches being displayed
             match_type = {"upcoming": "upcoming", "results": "completed", "all": ""}
@@ -315,24 +339,26 @@ def run_interactive_mode(
                         f"{formatter.muted('Press r to refresh events or pick another event.')}\n"
                     )
             else:
-                # Apply grouping if set
-                if current_group:
-                    grouped = group_matches(results, current_group)
-                    for group_key, group_results in grouped.items():
-                        if group_key != "all":
-                            print(f"\n{formatter.info(group_key.upper(), bold=True)}")
-                            print(formatter.muted("─" * 30))
-                        for _, match in group_results:
-                            print(format_match_full(formatter, match))
-                else:
-                    for _, match in results:
-                        print(format_match_full(formatter, match))
+                display_results(
+                    results,
+                    formatter,
+                    DisplayOptions(
+                        compact=profile.compact_mode,
+                        group_by=current_group,
+                        sort_by=current_sort,
+                    ),
+                    MatchStats(),
+                )
 
         except KeyboardInterrupt:
             logger.info("Application interrupted by user")
             print(
                 f"\n{formatter.warning('Application interrupted by user. Exiting...')}"
             )
+            break
+        except EOFError:
+            logger.info("Input closed; exiting interactive mode")
+            print(formatter.muted("Input closed. Exiting."))
             break
         except (json.JSONDecodeError, KeyError) as e:
             logger.error(f"Data parsing error: {e}", exc_info=True)

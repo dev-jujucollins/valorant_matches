@@ -15,6 +15,8 @@ A Python application that fetches and displays match results from the Valorant C
 - **Auto-discovery**: Automatically discovers current VCT events from vlr.gg
 - **Diagnostics**: Built-in doctor mode for connectivity, cache, and discovery checks
 - **Saved defaults**: Configure default region, view, sorting, grouping, compact mode, cache, and favorite teams
+- **Personal schedule**: Show favorite-team matches across regions with `--favorites`
+- **Season and event selection**: Choose a VCT season or discovered event ID
 - **Shell completion**: Print or install completion scripts for bash, zsh, and fish
 - Async/concurrent match processing for faster results
 - Beautiful terminal output with Rich formatting
@@ -103,6 +105,9 @@ uv run valorant-matches -r americas --group-by date        # Group by date
 
 # Filter by team
 uv run valorant-matches -r americas --team sentinels
+uv run valorant-matches --favorites                  # Favorites across regions
+uv run valorant-matches --season 2025 -r emea --results
+uv run valorant-matches --event 2766                # ID shown by --list-regions
 
 # Export matches
 uv run valorant-matches -r americas --export json                    # Export to matches.json
@@ -135,7 +140,12 @@ uv run valorant-matches config favorite add Sentinels
 uv run valorant-matches config get
 ```
 
-After setting `default-region`, running `uv run valorant-matches` uses that region instead of opening interactive mode. Explicit CLI flags always override saved defaults.
+After setting `default-region`, running `uv run valorant-matches` uses that region instead of opening interactive mode. Explicit CLI flags always override saved defaults. Use `--all`, `--no-compact`, `--cache`, `--sort none`, or `--group-by none` to temporarily clear saved choices.
+
+`--favorites` without a region collects favorite-team matches across available
+VCT regions; a region narrows it. Saved teams show a `★` in match output.
+Interactive mode uses saved display defaults and supports `v` to toggle the
+favorite-team filter.
 
 ### Shell Completion
 
@@ -176,6 +186,9 @@ Available options:
 | `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `VALORANT_MATCHES_HOME` | `~/.valorant-matches` | Runtime data directory |
 | `CACHE_DIR` | `<app home>/cache` | Optional cache-only override |
+
+An explicit `--cache` or `--no-cache` overrides the saved cache preference.
+When no preference was saved, `CACHE_ENABLED` supplies the default.
 
 ## Project Structure
 
@@ -287,12 +300,19 @@ uv run valorant-matches -r champions --sort date --timezone UTC
 last fully successful update, and retries after incomplete refreshes. The interval
 is a delay **after** each fetch finishes (default 60 seconds, minimum 10).
 Existing request rate limiting and completed-match caching still apply; use
-`--no-cache` for fresh completed scores too. Watch requires a region or saved
-default-region and cannot combine with export or interactive mode.
+`--no-cache` for fresh completed scores too. Watch requires a region, event ID,
+favorite-team schedule, or saved default-region and cannot combine with export
+or interactive mode.
 
-`--results` includes completed matches only; `--upcoming` includes scheduled
-matches only. Use the default all view to include live matches. Filtered matches
+`--results` includes completed matches only; `--upcoming` combines scheduled
+matches from ongoing and future events in the selected region, ordered by
+match time. Use the default all view to include live matches. Filtered matches
 are counted separately from failures.
+
+Discovery reads VLR's VCT event listing for the current year by default.
+`--season YEAR` selects another year; `--list-regions` displays IDs for
+`--event ID`. Last successful discovery is saved under the app data directory
+for outages. Output reports its timestamp when that snapshot is used.
 
 Match start times use the source UTC timestamp. Display defaults to the local
 timezone; `--timezone` accepts an IANA name. `--today` uses that timezone's date

@@ -1,47 +1,27 @@
 # Tests for event discovery.
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from bs4 import BeautifulSoup
 
 from valorant_matches.scraping.discovery import (
-    REGION_ALIASES,
+    VCT_EVENTS_URL,
     DiscoveredEvent,
     EventDiscovery,
 )
 
 
-class TestRegionAliases:
-    def test_americas_aliases(self):
-        """Test Americas region aliases."""
-        assert "americas" in REGION_ALIASES
-        assert "am" in REGION_ALIASES["americas"]
-        assert "americas" in REGION_ALIASES["americas"]
-
-    def test_emea_aliases(self):
-        """Test EMEA region aliases."""
-        assert "emea" in REGION_ALIASES
-        assert "eu" in REGION_ALIASES["emea"]
-        assert "emea" in REGION_ALIASES["emea"]
-
-    def test_pacific_aliases(self):
-        """Test Pacific region aliases."""
-        assert "pacific" in REGION_ALIASES
-        assert "apac" in REGION_ALIASES["pacific"]
-        assert "pacific" in REGION_ALIASES["pacific"]
-
-    def test_china_aliases(self):
-        """Test China region aliases."""
-        assert "china" in REGION_ALIASES
-        assert "cn" in REGION_ALIASES["china"]
-        assert "china" in REGION_ALIASES["china"]
-
-
 class TestEventDiscovery:
     @pytest.fixture
-    def discovery(self):
+    def discovery(self, tmp_path):
         """Create an EventDiscovery instance."""
-        return EventDiscovery()
+        return EventDiscovery(season=2026, snapshot_dir=tmp_path)
+
+    def test_default_season_tracks_calendar_year(self, tmp_path: Path) -> None:
+        """Default season rolls over without a source-code edit."""
+        assert EventDiscovery(snapshot_dir=tmp_path).season == datetime.now().year
 
     def test_parse_region_americas(self, discovery):
         """Test region parsing for Americas."""
@@ -70,6 +50,42 @@ class TestEventDiscovery:
     def test_parse_region_masters(self, discovery):
         """Test region parsing for Masters."""
         assert discovery._parse_region("Valorant Masters Santiago 2026") == "masters"
+
+    def test_older_champions_tour_names(self, tmp_path: Path) -> None:
+        """Historical season option recognizes the older VCT naming scheme."""
+        html = BeautifulSoup(
+            '<a href="/event/100/champions-tour-2024-americas-stage-2">'
+            "Champions Tour 2024: Americas Stage 2</a>"
+            '<a href="/event/101/champions-tour-2024-masters-shanghai">'
+            "Champions Tour 2024: Masters Shanghai</a>",
+            "html.parser",
+        )
+        older = EventDiscovery(season=2024, snapshot_dir=tmp_path)
+        with patch.object(older, "_make_request", return_value=html):
+            events = older.discover_events()
+        assert [event.region for event in events] == ["americas", "masters"]
+
+    def test_historical_season_uses_older_pages(self, tmp_path: Path) -> None:
+        """Explicit older seasons follow VLR's VCT pagination."""
+        first = BeautifulSoup(
+            '<a href="/event/100/champions-tour-2024-americas-stage-2">'
+            "Champions Tour 2024: Americas Stage 2</a>",
+            "html.parser",
+        )
+        second = BeautifulSoup(
+            '<a href="/event/90/vct-2023-americas-kickoff">'
+            "VCT 2023: Americas Kickoff</a>"
+            '<a href="/event/80/vct-2022-americas-kickoff">'
+            "VCT 2022: Americas Kickoff</a>",
+            "html.parser",
+        )
+        discovery = EventDiscovery(season=2023, snapshot_dir=tmp_path)
+        with patch.object(
+            discovery, "_make_request", side_effect=[first, second]
+        ) as request:
+            events = discovery.discover_events()
+        assert [event.event_id for event in events] == ["90"]
+        assert request.call_count == 2
 
     def test_parse_region_unknown(self, discovery):
         """Test region parsing for unknown region."""
@@ -137,6 +153,36 @@ class TestEventDiscovery:
         assert len(events) == 2
         assert events[0].event_id == "2682"
         assert events[1].event_id == "2684"
+        mock_request.assert_called_once_with(VCT_EVENTS_URL)
+
+    def test_snapshot_recovers_across_processes(self, tmp_path: Path) -> None:
+        """A later process uses its season's saved events during an outage."""
+        html = BeautifulSoup(
+            '<a href="/event/2682/vct-2026-americas-kickoff">VCT 2026: Americas Kickoff</a>',
+            "html.parser",
+        )
+        first = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+        with patch.object(first, "_make_request", return_value=html):
+            assert len(first.discover_events()) == 1
+
+        later = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+        with patch.object(later, "_make_request", return_value=None):
+            events = later.discover_events()
+        assert [event.event_id for event in events] == ["2682"]
+        assert later.is_stale is True
+        assert later.last_updated is not None
+
+    def test_selected_season_excludes_other_years(self, tmp_path: Path) -> None:
+        """Season selection never silently returns another year's events."""
+        html = BeautifulSoup(
+            '<a href="/event/1/vct-2025-americas-kickoff">VCT 2025: Americas Kickoff</a>'
+            '<a href="/event/2/vct-2026-americas-kickoff">VCT 2026: Americas Kickoff</a>',
+            "html.parser",
+        )
+        discovery = EventDiscovery(season=2025, snapshot_dir=tmp_path)
+        with patch.object(discovery, "_make_request", return_value=html):
+            events = discovery.discover_events()
+        assert [event.event_id for event in events] == ["1"]
 
     @patch.object(EventDiscovery, "_make_request")
     def test_discover_events_request_fails(self, mock_request, discovery):
@@ -243,13 +289,13 @@ class TestEventDiscovery:
         assert "emea" in regions
 
 
-def test_discovery_skips_non_string_link_attributes() -> None:
+def test_discovery_skips_non_string_link_attributes(tmp_path) -> None:
     """Malformed multi-valued hrefs must not break event discovery."""
     soup = BeautifulSoup(
         '<a href="/event/1/vct-2026-americas-kickoff">Event</a>',
         "lxml",
         multi_valued_attributes={"a": ["href"]},
     )
-    discovery = EventDiscovery()
+    discovery = EventDiscovery(season=2026, snapshot_dir=tmp_path)
     with patch.object(discovery, "_make_request", return_value=soup):
         assert discovery.discover_events(force_refresh=True) == []

@@ -15,6 +15,7 @@ from bs4 import BeautifulSoup
 from valorant_matches.cache import MatchCache
 from valorant_matches.config import (
     BASE_URL,
+    CACHE_ENABLED,
     HEADERS,
     MAX_RETRIES,
     RATE_LIMIT_DELAY,
@@ -57,7 +58,9 @@ class AsyncRateLimiter:
 class AsyncValorantClient(CircuitBreakerMixin):
     """Async client for fetching and processing Valorant match data."""
 
-    def __init__(self, cache_enabled: bool = True):
+    def __init__(self, cache_enabled: bool | None = None):
+        if cache_enabled is None:
+            cache_enabled = CACHE_ENABLED
         self.cache = MatchCache(enabled=cache_enabled)
         self._cache_enabled = cache_enabled
         self._init_circuit_breaker()
@@ -219,10 +222,19 @@ class AsyncValorantClient(CircuitBreakerMixin):
         try:
             if not upcoming_only and self._cache_enabled:
                 cached_data = self.cache.get(match_url)
-                if cached_data:
-                    cached_match = Match(**cached_data)
-                    if should_use_cached_match(cached_match):
-                        return ProcessMatchResult(match=cached_match, cache_hit=True)
+                if cached_data is not None:
+                    try:
+                        cached_match = Match(**cached_data)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Discarding malformed cached match for %s", match_url
+                        )
+                        self.cache.invalidate(match_url)
+                    else:
+                        if should_use_cached_match(cached_match):
+                            return ProcessMatchResult(
+                                match=cached_match, cache_hit=True
+                            )
 
             soup = await self._make_request(match_url)
             if not soup:

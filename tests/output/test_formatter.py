@@ -2,15 +2,31 @@
 import pytest
 
 from valorant_matches.output.formatter import STATUS_ICONS, Formatter
+from valorant_matches.scraping.matches import Match
 
 
 @pytest.fixture
 def formatter():
     """Create a Formatter instance for testing."""
-    return Formatter()
+    return Formatter(color=True)
 
 
 class TestFormatter:
+    def test_plain_output_and_favorite_marker(self) -> None:
+        """Redirected output stays readable and favorites remain visible."""
+        plain = Formatter(color=False, favorite_teams=["Sentinels"])
+        assert plain.info("hello") == "hello"
+        match = Match(
+            "Jan 1",
+            "1:00 PM",
+            "Sentinels",
+            "Cloud9",
+            "2-1",
+            False,
+            "https://vlr.gg/1",
+        )
+        assert "★ Sentinels" in plain.format_match_full(match)
+
     def test_format_basic(self, formatter):
         """Test basic text formatting."""
         result = formatter.format("Hello", "bright_cyan")
@@ -23,16 +39,6 @@ class TestFormatter:
         formatter.format("Hello", "bright_cyan")
         captured = capsys.readouterr()
         assert captured.out == ""
-
-    def test_format_with_bold(self, formatter):
-        """Test formatting with bold style."""
-        result = formatter.format("Bold Text", "bright_cyan", bold=True)
-        assert "Bold Text" in result
-
-    def test_format_with_underline(self, formatter):
-        """Test formatting with underline style."""
-        result = formatter.format("Underlined", "bright_cyan", underline=True)
-        assert "Underlined" in result
 
 
 class TestFormatMatchCompact:

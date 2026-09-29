@@ -6,12 +6,13 @@ import logging.config
 import shutil
 import sys
 import tempfile
+from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from valorant_matches.cli.display import run_cli_mode
+from valorant_matches.cli.display import run_cli_mode, saved_discovery_notice
 from valorant_matches.cli.interactive import run_interactive_mode
-from valorant_matches.config import APP_DIR, CACHE_DIR, EVENTS, LOGGING_CONFIG
+from valorant_matches.config import APP_DIR, CACHE_DIR, LOGGING_CONFIG
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.profile import UserProfile, config_manager
 from valorant_matches.scraping.discovery import (
@@ -117,11 +118,17 @@ Available regions:
         action="store_true",
         help="Show only completed match results",
     )
+    parser.add_argument("--all", action="store_true", help="Override saved view mode")
+    parser.add_argument(
+        "--cache", dest="no_cache", action="store_false", help="Use cache for this run"
+    )
     parser.add_argument(
         "--no-cache",
+        dest="no_cache",
         action="store_true",
         help="Disable cache and fetch fresh data",
     )
+    parser.set_defaults(no_cache=None)
     parser.add_argument(
         "--clear-cache",
         action="store_true",
@@ -139,17 +146,25 @@ Available regions:
     )
     parser.add_argument(
         "--compact",
+        dest="compact",
         action="store_true",
         help="Display matches in compact single-line format",
     )
     parser.add_argument(
+        "--no-compact",
+        dest="compact",
+        action="store_false",
+        help="Use full match display for this run",
+    )
+    parser.set_defaults(compact=None)
+    parser.add_argument(
         "--group-by",
-        choices=["date", "status"],
+        choices=["date", "status", "none"],
         help="Group matches by date or status",
     )
     parser.add_argument(
         "--sort",
-        choices=["date", "team"],
+        choices=["date", "team", "none"],
         help="Sort matches by date or team name",
     )
     parser.add_argument(
@@ -167,6 +182,15 @@ Available regions:
         "--team",
         type=str,
         help="Filter matches by team name (case-insensitive)",
+    )
+    parser.add_argument(
+        "--favorites",
+        action="store_true",
+        help="Show saved favorite teams across regions",
+    )
+    parser.add_argument("--event", help="Fetch a discovered event by numeric ID")
+    parser.add_argument(
+        "--season", type=int, help="VCT season to discover (default: current year)"
     )
     parser.add_argument(
         "--doctor",
@@ -204,8 +228,14 @@ Available regions:
         help="Seconds between watch refreshes (minimum 10, default 60)",
     )
     args = parser.parse_args()
-    if args.upcoming and args.results:
-        parser.error("--upcoming and --results cannot be combined")
+    if sum((args.upcoming, args.results, args.all)) > 1:
+        parser.error("--all, --upcoming, and --results cannot be combined")
+    if args.event and not args.event.isdigit():
+        parser.error("--event requires a numeric event ID")
+    if args.season is not None and not 2020 <= args.season <= 2100:
+        parser.error("--season must be between 2020 and 2100")
+    if args.event and args.region:
+        parser.error("--event and --region cannot be combined")
     if args.interval < 10:
         parser.error("--interval must be at least 10 seconds")
     if args.watch and (args.export or args.interactive):
@@ -227,16 +257,22 @@ def get_completion_script(shell: str) -> str:
         "--region",
         "--upcoming",
         "--results",
+        "--all",
+        "--cache",
         "--no-cache",
         "--clear-cache",
         "--list-regions",
         "--refresh",
         "--compact",
+        "--no-compact",
         "--group-by",
         "--sort",
         "--export",
         "--output",
         "--team",
+        "--favorites",
+        "--event",
+        "--season",
         "--doctor",
         "--quickstart",
         "--print-completion",
@@ -524,25 +560,39 @@ def run_doctor(formatter: Formatter, discovery: EventDiscovery) -> int:
 
 def apply_profile_defaults(args: argparse.Namespace, profile: UserProfile) -> None:
     """Apply saved defaults when equivalent CLI flags are absent."""
-    if not args.region and profile.default_region:
+    if (
+        not args.region
+        and getattr(args, "favorites", False) is not True
+        and not isinstance(getattr(args, "event", None), str)
+        and profile.default_region
+    ):
         args.region = profile.default_region
 
-    if not args.upcoming and not args.results:
+    if (
+        not args.upcoming
+        and not args.results
+        and getattr(args, "all", False) is not True
+    ):
         if profile.default_view_mode == "upcoming":
             args.upcoming = True
         elif profile.default_view_mode == "results":
             args.results = True
 
-    if not getattr(args, "compact", False):
+    if getattr(args, "compact", None) is None:
         args.compact = profile.compact_mode
 
     if getattr(args, "sort", None) is None:
         args.sort = profile.default_sort
+    elif args.sort == "none":
+        args.sort = None
+        args.sort_explicit_none = True
 
     if getattr(args, "group_by", None) is None:
         args.group_by = profile.default_group_by
+    elif args.group_by == "none":
+        args.group_by = None
 
-    if not getattr(args, "no_cache", False):
+    if getattr(args, "no_cache", None) is None:
         args.no_cache = not profile.cache_enabled
 
 
@@ -581,12 +631,24 @@ def main() -> None:
         sys.exit(0)
 
     # Initialize event discovery
-    discovery = EventDiscovery()
+    discovery = EventDiscovery(season=args.season)
     force_refresh = getattr(args, "refresh", False)
     profile = config_manager.load()
     apply_profile_defaults(args, profile)
+    args.favorite_teams = profile.favorite_teams
+    formatter.set_favorite_teams(profile.favorite_teams)
 
-    if (args.watch or args.today or args.timezone) and not args.region:
+    if args.favorites and not profile.favorite_teams:
+        print(
+            formatter.error(
+                "No favorite teams saved. Add one with config favorite add."
+            )
+        )
+        sys.exit(2)
+
+    if (args.watch or args.today or args.timezone) and not (
+        args.region or args.event or args.favorites
+    ):
         print(
             formatter.error(
                 "--watch, --today, and --timezone require --region or a saved default-region."
@@ -601,6 +663,9 @@ def main() -> None:
     if args.list_regions:
         print(f"\n{formatter.info('Discovering VCT events...', bold=True)}\n")
         events = discovery.discover_events(force_refresh=force_refresh)
+        notice = saved_discovery_notice(discovery)
+        if notice:
+            print(formatter.warning(notice))
 
         if events:
             print(f"{formatter.info('Available events:', bold=True)}\n")
@@ -615,25 +680,37 @@ def main() -> None:
                 print(f"  {formatter.primary(alias_str, bold=True)}:")
                 for event in region_events:
                     status = f" [{event.status}]" if event.status else ""
-                    print(f"    - {event.name}{formatter.muted(status)}")
+                    print(
+                        f"    - {event.event_id}: {event.name}{formatter.muted(status)}"
+                    )
                 print()
         else:
-            print(f"{formatter.warning('No events discovered, showing fallback:')}\n")
-            for key, event in EVENTS.items():
-                print(f"  {formatter.primary(key, bold=True)}: {event.name}")
-            print()
+            print(f"{formatter.warning('No events found for selected season.')}\n")
+            sys.exit(1)
         sys.exit(0)
 
     print(f"\n{formatter.format('Valorant Champions Tour', 'bright_cyan', bold=True)}")
     print(f"{formatter.format('=' * 40, 'bright_magenta')}\n")
 
     # Determine mode based on arguments
-    if args.region:
+    if args.region or args.event or args.favorites:
         # CLI mode
-        exit_code = run_cli_mode(args, formatter, discovery, run_interactive_mode)
+        interactive_func = partial(
+            run_interactive_mode,
+            profile=profile,
+            cache_enabled=not args.no_cache,
+            timezone=args.timezone,
+        )
+        exit_code = run_cli_mode(args, formatter, discovery, interactive_func)
     else:
         # Interactive mode
-        exit_code = run_interactive_mode(formatter, discovery)
+        exit_code = run_interactive_mode(
+            formatter,
+            discovery,
+            profile=profile,
+            cache_enabled=not args.no_cache,
+            timezone=args.timezone,
+        )
 
     logger.info("Application shutdown complete")
     sys.exit(exit_code)

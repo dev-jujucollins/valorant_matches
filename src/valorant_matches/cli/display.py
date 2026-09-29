@@ -12,11 +12,27 @@ from zoneinfo import ZoneInfo
 from valorant_matches.output.exporters import export_matches
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.scraping.discovery import EventDiscovery
-from valorant_matches.scraping.event_selection import get_event_for_region
+from valorant_matches.scraping.event_selection import (
+    get_event_for_region,
+    get_events_for_region,
+)
 from valorant_matches.scraping.matches import Match
 from valorant_matches.scraping.runner import fetch_event_data
 
 logger = logging.getLogger("valorant_matches")
+
+
+def saved_discovery_notice(discovery: EventDiscovery) -> str | None:
+    """Describe the saved event list when live discovery failed."""
+    if getattr(discovery, "is_stale", False) is not True:
+        return None
+    updated = discovery.last_updated
+    timestamp = (
+        datetime.fromtimestamp(updated).astimezone().isoformat()
+        if isinstance(updated, (int, float))
+        else "unknown"
+    )
+    return f"Using saved event list from {timestamp}; refresh failed."
 
 
 @dataclass
@@ -37,6 +53,7 @@ class MatchStats:
     cache_hits: int = 0
     failed: int = 0
     tbd_count: int = 0
+    skipped_count: int = 0
     live_count: int = 0
     upcoming_count: int = 0
     completed_count: int = 0
@@ -201,6 +218,7 @@ def run_cli_mode(
     run_interactive_func: Callable[[Formatter, EventDiscovery], int],
 ) -> int:
     """Run once or refresh until interrupted, retaining freshness metadata."""
+    formatter.set_favorite_teams(getattr(args, "favorite_teams", []))
     if not getattr(args, "watch", False):
         return _run_cli_once(args, formatter, discovery, run_interactive_func)
     state = WatchState()
@@ -281,6 +299,35 @@ def filter_matches_by_team(
             filtered.append((link, match))
 
     return filtered
+
+
+def filter_matches_by_favorites(
+    results: list[tuple[dict, Match]], favorite_teams: list[str]
+) -> list[tuple[dict, Match]]:
+    """Keep matches with at least one saved favorite team."""
+    favorites = {team.casefold() for team in favorite_teams}
+    return [
+        (link, match)
+        for link, match in results
+        if match.team1.casefold() in favorites or match.team2.casefold() in favorites
+    ]
+
+
+def prepare_matches(
+    results: list[tuple[dict, Match]],
+    timezone: str | None = None,
+    today_only: bool = False,
+    team: str | None = None,
+    favorite_teams: list[str] | None = None,
+    favorites_only: bool = False,
+    sort_by: str | None = None,
+) -> list[tuple[dict, Match]]:
+    """Apply shared localization, filters, and sorting for both CLI modes."""
+    prepared = localize_matches(results, timezone, today_only)
+    prepared = filter_matches_by_team(prepared, team)
+    if favorites_only:
+        prepared = filter_matches_by_favorites(prepared, favorite_teams or [])
+    return sort_matches(prepared, sort_by)
 
 
 def format_match_full(formatter: Formatter, match: Match) -> str:
@@ -380,66 +427,131 @@ def _run_cli_once(
 
     view_mode = get_view_mode(args)
 
-    # Get event using auto-discovery
-    event = get_event_for_region(
-        args.region,
-        discovery,
-        force_refresh=getattr(args, "refresh", False),
-        view_mode=view_mode,
-    )
-    if not event:
-        print(f"\n{formatter.error(f'No events found for region: {args.region}')}")
+    event_id = getattr(args, "event", None)
+    favorites_only = getattr(args, "favorites", False)
+    if event_id:
+        selected = discovery.get_event_by_id(
+            event_id, force_refresh=getattr(args, "refresh", False)
+        )
+        events = [selected] if selected else []
+    elif favorites_only and not args.region:
+        events = []
+        for region in discovery.list_regions():
+            if region not in {
+                "americas",
+                "emea",
+                "pacific",
+                "china",
+                "masters",
+                "champions",
+            }:
+                continue
+            if view_mode == "upcoming":
+                events.extend(
+                    event
+                    for event in get_events_for_region(
+                        region, discovery, view_mode=view_mode
+                    )
+                    if event.status in {"ongoing", "upcoming"}
+                )
+            else:
+                selected = get_event_for_region(region, discovery, view_mode=view_mode)
+                if selected:
+                    events.append(selected)
+    elif view_mode == "upcoming":
+        events = [
+            event
+            for event in get_events_for_region(
+                args.region,
+                discovery,
+                force_refresh=getattr(args, "refresh", False),
+                view_mode=view_mode,
+            )
+            if event.status in {"ongoing", "upcoming"}
+        ]
+    else:
+        selected = get_event_for_region(
+            args.region,
+            discovery,
+            force_refresh=getattr(args, "refresh", False),
+            view_mode=view_mode,
+        )
+        events = [selected] if selected else []
+    events = list({event.event_id: event for event in events}.values())
+    if not events:
+        if view_mode == "upcoming" and not event_id and discovery.discover_events():
+            print(
+                formatter.warning(
+                    "No upcoming VCT events are scheduled for this selection."
+                )
+            )
+            return 0
+        target = event_id or args.region or "favorite teams"
+        print(f"\n{formatter.error(f'No events found for: {target}')}")
         print(
             f"{formatter.muted('Try --list-regions to see discovered options, or run with --refresh to force discovery.')}\n"
         )
         return 1
+    notice = saved_discovery_notice(discovery)
+    if notice:
+        print(formatter.warning(notice))
 
-    status_str = f" ({event.status})" if event.status != "unknown" else ""
-    print(
-        f"\n{formatter.info(f'Fetching matches for: {event.name}{status_str}', bold=True)}\n"
-    )
-
-    fetch_result = fetch_event_data(
-        event.url,
-        event.slug,
-        view_mode=view_mode,
-        cache_enabled=cache_enabled,
-    )
-    if fetch_result.error:
-        error = fetch_result.error
-        print(formatter.error(f"{error.error_type}: {error.message} ({error.url})"))
-        return 1
-    if not fetch_result.total_links and not getattr(args, "export", None):
+    fetched: list[tuple[dict, Match]] = []
+    for event in events:
+        status_str = f" ({event.status})" if event.status != "unknown" else ""
+        print(
+            f"\n{formatter.info(f'Fetching matches for: {event.name}{status_str}', bold=True)}\n"
+        )
+        fetch_result = fetch_event_data(
+            event.url,
+            event.slug,
+            view_mode=view_mode,
+            cache_enabled=cache_enabled,
+        )
+        if fetch_result.error:
+            error = fetch_result.error
+            stats.add_error(error.url, error.error_type, error.message)
+            print(formatter.error(f"{error.error_type}: {error.message} ({error.url})"))
+            continue
+        processed = fetch_result.processed
+        stats.total += fetch_result.total_links
+        stats.tbd_count += processed.tbd_count
+        stats.cache_hits += processed.cache_hits
+        stats.failed += processed.failed_count
+        stats.skipped_count += processed.skipped_count
+        stats.errors.extend(
+            MatchError(e.url, e.error_type, e.message) for e in processed.errors
+        )
+        fetched.extend(processed.results)
+    if not stats.total and not getattr(args, "export", None) and not stats.failed:
         print(f"\n{formatter.warning('No matches found for the selected event page.')}")
         print(
             f"{formatter.muted('The event may not have posted matches yet. Try --refresh or check another region.')}\n"
         )
         return 0
 
-    processed = fetch_result.processed
-    stats.total = fetch_result.total_links
-    stats.tbd_count = processed.tbd_count
-    stats.cache_hits = processed.cache_hits
-    stats.failed = processed.failed_count
-    stats.errors = [
-        MatchError(e.url, e.error_type, e.message) for e in processed.errors
-    ]
-    results = localize_matches(
-        processed.results,
-        getattr(args, "timezone", None),
-        getattr(args, "today", False),
-    )
-    if stats.failed and not results:
+    if stats.failed and not fetched:
         print(
             formatter.error("Match retrieval incomplete; no usable matches returned.")
         )
         print_error_summary(formatter, stats)
         return 1
-
-    # Apply team filter if specified
+    unique = {match.url: (link, match) for link, match in fetched}
     team_filter = getattr(args, "team", None)
+    sort_by = getattr(args, "sort", None)
+    if sort_by is None and not getattr(args, "sort_explicit_none", False):
+        sort_by = "date" if len(events) > 1 else None
+    results = prepare_matches(
+        list(unique.values()),
+        timezone=getattr(args, "timezone", None),
+        today_only=getattr(args, "today", False),
+        team=team_filter,
+        favorite_teams=getattr(args, "favorite_teams", []),
+        favorites_only=favorites_only,
+        sort_by=sort_by,
+    )
+    # Apply team filter if specified
     if team_filter:
-        results = filter_matches_by_team(results, team_filter)
         logger.info(f"Filtered to {len(results)} matches for team '{team_filter}'")
 
     if watch_state is not None:
@@ -457,7 +569,7 @@ def _run_cli_once(
         output_path = getattr(args, "output", None)
         try:
             count = export_matches(
-                sort_matches(results, getattr(args, "sort", None)),
+                results,
                 export_format,
                 output_path,
             )
@@ -472,6 +584,8 @@ def _run_cli_once(
     if not results:
         if getattr(args, "today", False):
             print(formatter.warning("No matches with known start times today."))
+        elif favorites_only:
+            print(formatter.warning("No matches found for saved favorite teams."))
         elif team_filter:
             print(
                 f"\n{formatter.warning(f'No matches found for team filter: {team_filter}')}"
@@ -502,6 +616,7 @@ def _run_cli_once(
             )
     else:
         options = get_display_options(args)
+        options.sort_by = sort_by
         display_results(results, formatter, options, stats)
 
     stats.fetch_time = time.monotonic() - start_time
@@ -514,7 +629,7 @@ def _run_cli_once(
         tbd_count=stats.tbd_count,
         fetch_time=stats.fetch_time,
         live_count=stats.live_count,
-        skipped_count=processed.skipped_count,
+        skipped_count=stats.skipped_count,
     )
 
     # Print error summary if there were errors

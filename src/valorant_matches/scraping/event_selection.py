@@ -2,9 +2,7 @@
 
 import logging
 
-from valorant_matches.config import EVENTS, REGION_FALLBACK_KEYS
 from valorant_matches.scraping.discovery import (
-    REGION_ALIASES,
     DiscoveredEvent,
     EventDiscovery,
 )
@@ -12,14 +10,13 @@ from valorant_matches.scraping.discovery import (
 logger = logging.getLogger("valorant_matches")
 
 
-def get_event_for_region(
+def get_events_for_region(
     region: str,
     discovery: EventDiscovery,
     force_refresh: bool = False,
     view_mode: str = "all",
-) -> DiscoveredEvent | None:
-    """Get the best matching event for a region using auto-discovery with fallback."""
-    # Try auto-discovery first
+) -> list[DiscoveredEvent]:
+    """Rank discovered events for a region and view mode."""
     events = discovery.get_events_by_region(region, force_refresh=force_refresh)
 
     if events:
@@ -43,29 +40,17 @@ def get_event_for_region(
                 -event_id_key(event),
             ),
         )
-        return ranked[0]
+        return ranked
+    logger.warning("No discovered events for region %s", region)
+    return []
 
-    # Fallback to hardcoded config
-    logger.warning(
-        f"No discovered events for '{region}'; falling back to the hardcoded event "
-        "table, which may be outdated. Re-run with --refresh once vlr.gg is reachable."
-    )
 
-    # Normalize region and find fallback event
-    for canonical, aliases in REGION_ALIASES.items():
-        if region.lower() in aliases:
-            key = REGION_FALLBACK_KEYS.get(canonical)
-            if key and key in EVENTS:
-                fallback = EVENTS[key]
-                return DiscoveredEvent(
-                    name=fallback.name,
-                    url=fallback.url,
-                    event_id=fallback.series_id,
-                    slug="",
-                    status="unknown",
-                    dates="",
-                    region=canonical,
-                )
-            break
-
-    return None
+def get_event_for_region(
+    region: str,
+    discovery: EventDiscovery,
+    force_refresh: bool = False,
+    view_mode: str = "all",
+) -> DiscoveredEvent | None:
+    """Get one preferred event for existing single-event workflows."""
+    events = get_events_for_region(region, discovery, force_refresh, view_mode)
+    return events[0] if events else None
