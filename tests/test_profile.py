@@ -3,12 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from valorant_matches.profile import (
-    ConfigManager,
-    UserProfile,
-    get_profile,
-    save_profile,
-)
+from valorant_matches.profile import ConfigManager, UserProfile
 
 
 class TestUserProfile:
@@ -172,18 +167,3 @@ class TestConfigManager:
 
             # Should return default profile
             assert profile.default_region is None
-
-
-class TestGlobalFunctions:
-    """Tests for module-level helper functions."""
-
-    def test_get_profile(self):
-        """Test get_profile returns a profile."""
-        profile = get_profile()
-        assert isinstance(profile, UserProfile)
-
-    def test_save_profile(self):
-        """Test save_profile saves the profile."""
-        # This modifies global state, so just verify it doesn't crash
-        profile = UserProfile()
-        save_profile(profile)

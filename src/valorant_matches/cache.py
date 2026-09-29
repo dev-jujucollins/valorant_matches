@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import math
 import tempfile
 import threading
 import time
@@ -103,23 +104,34 @@ class MatchCache:
             with open(cache_path, encoding="utf-8") as f:
                 cached = json.load(f)
 
+            if not isinstance(cached, dict):
+                raise ValueError("cache entry must be an object")
             if cached.get("version") != CACHE_SCHEMA_VERSION:
                 logger.debug(f"Cache schema mismatch for {url}, discarding")
                 cache_path.unlink(missing_ok=True)
                 return None
 
             # Check if cache has expired
-            if time.time() - cached["timestamp"] > self.ttl_seconds:
+            timestamp = cached["timestamp"]
+            if (
+                not isinstance(timestamp, (int, float))
+                or isinstance(timestamp, bool)
+                or not math.isfinite(timestamp)
+            ):
+                raise ValueError("cache timestamp is invalid")
+            if time.time() - timestamp > self.ttl_seconds:
                 logger.debug(f"Cache expired for {url}")
                 cache_path.unlink(missing_ok=True)
                 return None
 
             # Promote to memory cache for faster subsequent access
+            if not isinstance(cached["data"], dict):
+                raise ValueError("cache data must be an object")
             self._memory_set(key, cached["data"])
             logger.debug(f"Disk cache hit for {url}")
             return cached["data"]
 
-        except (json.JSONDecodeError, KeyError, OSError) as e:
+        except (json.JSONDecodeError, KeyError, OSError, ValueError) as e:
             logger.warning(f"Failed to read cache for {url}: {e}")
             cache_path.unlink(missing_ok=True)
             return None

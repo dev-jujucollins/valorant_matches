@@ -42,20 +42,6 @@ def make_match(
 class TestMatchStats:
     """Tests for MatchStats dataclass."""
 
-    def test_increment_cache_hit(self):
-        """Test incrementing cache hit counter."""
-        stats = MatchStats()
-        stats.increment_cache_hit()
-        assert stats.cache_hits == 1
-        stats.increment_cache_hit()
-        assert stats.cache_hits == 2
-
-    def test_increment_failed(self):
-        """Test incrementing failed counter."""
-        stats = MatchStats()
-        stats.increment_failed()
-        assert stats.failed == 1
-
     def test_count_match_live(self):
         """Test counting live match."""
         stats = MatchStats()

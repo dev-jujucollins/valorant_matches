@@ -5,7 +5,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from valorant_matches.config import APP_DIR
+from valorant_matches.config import APP_DIR, CACHE_ENABLED
 
 logger = logging.getLogger("valorant_matches")
 
@@ -24,7 +24,7 @@ class UserProfile:
     default_view_mode: str = "all"  # "all", "upcoming", "results"
     default_sort: str | None = None  # "date", "team"
     default_group_by: str | None = None  # "date", "status"
-    cache_enabled: bool = True
+    cache_enabled: bool = CACHE_ENABLED
 
     def add_favorite_team(self, team: str) -> None:
         """Add a team to favorites (case-preserved, deduped)."""

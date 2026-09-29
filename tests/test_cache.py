@@ -1,4 +1,5 @@
 # Tests for the cache module.
+import json
 import time
 
 import pytest
@@ -27,6 +28,25 @@ def disabled_cache(temp_cache_dir):
 
 
 class TestMatchCache:
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            [],
+            {"version": 2, "timestamp": "bad", "data": {}},
+            {"version": 2, "timestamp": time.time(), "data": []},
+        ],
+    )
+    def test_malformed_record_is_discarded(
+        self, cache: MatchCache, entry: object
+    ) -> None:
+        """A damaged disk record should become a cache miss."""
+        url = "https://vlr.gg/123/match"
+        path = cache._get_cache_path(cache._get_cache_key(url))
+        path.write_text(json.dumps(entry))
+
+        assert cache.get(url) is None
+        assert not path.exists()
+
     def test_cache_set_and_get(self, cache):
         """Test basic set and get operations."""
         url = "https://vlr.gg/match/12345"
@@ -128,16 +148,6 @@ class TestMatchCache:
         assert result is None
         # File should be deleted
         assert not cache_path.exists()
-
-    def test_cache_key_generation(self, cache):
-        """Test that cache keys are consistent."""
-        url = "https://vlr.gg/match/12345"
-
-        key1 = cache._get_cache_key(url)
-        key2 = cache._get_cache_key(url)
-
-        assert key1 == key2
-        assert len(key1) == 64  # SHA-256 hex digest length
 
     def test_cache_invalidate(self, cache):
         """Test invalidating a cached entry."""

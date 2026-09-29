@@ -1,7 +1,10 @@
 # Tests for CLI application helpers.
 
 import sys
+from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 from valorant_matches.cli.app import (
     CLI_COMMAND,
@@ -59,6 +62,51 @@ class TestMainArgs:
         assert args.command == "completion"
         assert args.completion_command == "install"
         assert args.shell == "zsh"
+
+    def test_main_dispatches_personal_schedule_with_selected_season(
+        self, tmp_path: Path
+    ) -> None:
+        """Entry point keeps favorites across regions despite saved region."""
+        from valorant_matches.cli.app import main
+
+        profile = UserProfile(default_region="americas", favorite_teams=["Sentinels"])
+        with (
+            patch.object(
+                sys, "argv", ["valorant-matches", "--favorites", "--season", "2025"]
+            ),
+            patch("valorant_matches.cli.app.APP_DIR", tmp_path),
+            patch("valorant_matches.cli.app.logging.config.dictConfig"),
+            patch("valorant_matches.cli.app.config_manager.load", return_value=profile),
+            patch("valorant_matches.cli.app.EventDiscovery") as discovery,
+            patch("valorant_matches.cli.app.run_cli_mode", return_value=0) as run,
+            pytest.raises(SystemExit) as exit_result,
+        ):
+            main()
+        assert exit_result.value.code == 0
+        discovery.assert_called_once_with(season=2025)
+        assert run.call_args.args[0].region is None
+        assert run.call_args.args[0].favorite_teams == ["Sentinels"]
+
+    def test_list_regions_returns_failure_when_discovery_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        """An empty discovery without a saved snapshot is not success."""
+        from valorant_matches.cli.app import main
+
+        with (
+            patch.object(sys, "argv", ["valorant-matches", "--list-regions"]),
+            patch("valorant_matches.cli.app.APP_DIR", tmp_path),
+            patch("valorant_matches.cli.app.logging.config.dictConfig"),
+            patch(
+                "valorant_matches.cli.app.config_manager.load",
+                return_value=UserProfile(),
+            ),
+            patch("valorant_matches.cli.app.EventDiscovery") as discovery,
+            pytest.raises(SystemExit) as exit_result,
+        ):
+            discovery.return_value.discover_events.return_value = []
+            main()
+        assert exit_result.value.code == 1
 
 
 class TestShellCompletion:
@@ -119,10 +167,10 @@ class TestProfileDefaults:
         args.region = None
         args.upcoming = False
         args.results = False
-        args.compact = False
+        args.compact = None
         args.sort = None
         args.group_by = None
-        args.no_cache = False
+        args.no_cache = None
 
         profile = UserProfile(
             default_region="americas",
@@ -171,6 +219,41 @@ class TestProfileDefaults:
         assert args.sort == "team"
         assert args.group_by == "date"
         assert args.no_cache is True
+
+    def test_explicit_flags_restore_unsaved_behavior(self) -> None:
+        """One CLI invocation can override every saved display choice."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "valorant-matches",
+                "-r",
+                "americas",
+                "--all",
+                "--cache",
+                "--no-compact",
+                "--sort",
+                "none",
+                "--group-by",
+                "none",
+            ],
+        ):
+            args = parse_args()
+        apply_profile_defaults(
+            args,
+            UserProfile(
+                default_view_mode="results",
+                compact_mode=True,
+                default_sort="team",
+                default_group_by="status",
+                cache_enabled=False,
+            ),
+        )
+        assert args.all is True and args.results is False
+        assert args.no_cache is False
+        assert args.compact is False
+        assert args.sort is None and args.group_by is None
+        assert args.sort_explicit_none is True
 
 
 class TestConfigCommand:

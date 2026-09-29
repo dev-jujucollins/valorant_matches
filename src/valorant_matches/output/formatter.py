@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import sys
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -35,8 +36,22 @@ VALORANT_THEME = Theme(
 class Formatter:
     """Enhanced class for formatting text output using Rich library."""
 
-    def __init__(self):
-        self.console = Console(theme=VALORANT_THEME, force_terminal=True)
+    def __init__(
+        self, color: bool | None = None, favorite_teams: list[str] | None = None
+    ) -> None:
+        self.console = Console(
+            theme=VALORANT_THEME,
+            force_terminal=sys.stdout.isatty() if color is None else color,
+        )
+        self.set_favorite_teams(favorite_teams or [])
+
+    def set_favorite_teams(self, teams: list[str]) -> None:
+        """Mark saved teams in all match views."""
+        self.favorite_teams = {team.casefold() for team in teams}
+
+    def _team_label(self, team: str) -> str:
+        """Add a visible favorite marker to a saved team."""
+        return f"★ {team}" if team.casefold() in self.favorite_teams else team
 
     def format(
         self, text: str, style: str, bold: bool = False, underline: bool = False
@@ -51,13 +66,15 @@ class Formatter:
 
         formatted = Text(text)
         formatted.stylize(" ".join(style_parts))
+        if not self.console.is_terminal:
+            return formatted.plain
 
         # Rich only includes ANSI styles when exporting recorded output.
         # Use off-screen buffer so formatting doesn't print immediately.
         render_console = Console(
             file=io.StringIO(),
             theme=VALORANT_THEME,
-            force_terminal=True,
+            force_terminal=self.console.is_terminal,
             width=self.console.width,
             record=True,
         )
@@ -141,15 +158,15 @@ class Formatter:
         if is_live:
             status_icon = STATUS_ICONS["live"]
             status = self.live_status(f"{status_icon} LIVE")
-            match_str = f"{team1} {score} {team2}"
+            match_str = f"{self._team_label(team1)} {score} {self._team_label(team2)}"
         elif is_upcoming:
             status_icon = STATUS_ICONS["upcoming"]
             status = self.warning(f"{status_icon} {score}")
-            match_str = f"{team1} vs {team2}"
+            match_str = f"{self._team_label(team1)} vs {self._team_label(team2)}"
         else:
             status_icon = STATUS_ICONS["completed"]
             status = self.success(status_icon)
-            match_str = f"{team1} {score} {team2}"
+            match_str = f"{self._team_label(team1)} {score} {self._team_label(team2)}"
 
         return f"{self.muted(date)} | {self.team_name(match_str)} | {status}"
 
@@ -159,7 +176,9 @@ class Formatter:
 
         separator = "─" * min(100, self.console.width)
         date_time = self.date_time(f"{match.date}  {match.time}")
-        teams = self.team_name(f"{match.team1} vs {match.team2}")
+        teams = self.team_name(
+            f"{self._team_label(match.team1)} vs {self._team_label(match.team2)}"
+        )
         stats_link = self.stats_link(f"Stats: {match.url}")
 
         if match.is_live:

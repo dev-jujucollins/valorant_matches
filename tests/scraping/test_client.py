@@ -95,6 +95,38 @@ class TestAsyncValorantClientContextManager:
         with pytest.raises(RuntimeError, match="Client not initialized"):
             await client._make_request("https://example.com")
 
+    def test_default_client_honors_environment_cache_setting(self) -> None:
+        """Client default must pass configured cache choice to cache storage."""
+        with (
+            patch("valorant_matches.scraping.client.CACHE_ENABLED", False),
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+        ):
+            client = AsyncValorantClient()
+        assert client._cache_enabled is False
+        cache.assert_called_once_with(enabled=False)
+
+    @pytest.mark.asyncio
+    async def test_malformed_cached_match_refetches(self) -> None:
+        """Incomplete cached Match must not block a fresh HTTP result."""
+        fresh = make_result("/123/match")
+        with (
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+            patch.object(
+                AsyncValorantClient, "_make_request", new_callable=AsyncMock
+            ) as request,
+            patch(
+                "valorant_matches.scraping.client.build_match_from_soup",
+                return_value=fresh,
+            ),
+        ):
+            cache.return_value.get.return_value = {"team1": "A"}
+            request.return_value = BeautifulSoup("<html></html>", "lxml")
+            client = AsyncValorantClient()
+            result = await client.process_match({"href": "/123/match"})
+        assert result.match == fresh.match
+        assert request.await_count == 1
+        cache.return_value.invalidate.assert_called_once()
+
 
 class TestAsyncValorantClientMakeRequest:
     """Tests for _make_request method."""

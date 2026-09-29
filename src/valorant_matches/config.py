@@ -1,6 +1,5 @@
 # Configuration settings for the Valorant Matches application.
 import os
-from dataclasses import dataclass
 from pathlib import Path
 
 import colorlog
@@ -89,59 +88,6 @@ CACHE_DIR = Path(os.getenv("CACHE_DIR", APP_DIR / "cache"))
 # Rate limiting settings
 RATE_LIMIT_DELAY = float(os.getenv("RATE_LIMIT_DELAY", "0.5"))
 
-
-@dataclass
-class Event:
-    # Represents a VCT event
-
-    name: str
-    url: str
-    series_id: str
-
-
-# Event configurations
-EVENTS: dict[str, Event] = {
-    "1": Event(
-        name="VCT 26: Americas Kickoff",
-        url=f"{BASE_URL}/event/matches/2682/vct-2026-americas-kickoff/",
-        series_id="2682",
-    ),
-    "2": Event(
-        name="VCT 26: EMEA Kickoff",
-        url=f"{BASE_URL}/event/matches/2684/vct-2026-emea-kickoff/",
-        series_id="2684",
-    ),
-    "3": Event(
-        name="VCT 26: Pacific Kickoff",
-        url=f"{BASE_URL}/event/matches/2683/vct-2026-pacific-kickoff/",
-        series_id="2683",
-    ),
-    "4": Event(
-        name="VCT 26: China Kickoff",
-        url=f"{BASE_URL}/event/matches/2685/vct-2026-china-kickoff/",
-        series_id="2685",
-    ),
-    "5": Event(
-        name="Valorant Champions 2026",
-        url=f"{BASE_URL}/event/matches/2766/valorant-champions-2026/",
-        series_id="2766",
-    ),
-    "6": Event(
-        name="Valorant Masters Bangkok 2026",
-        url=f"{BASE_URL}/event/matches/2767/valorant-masters-bangkok-2026/",
-        series_id="2767",
-    ),
-}
-
-# Mapping from canonical region names to EVENTS keys for fallback
-REGION_FALLBACK_KEYS: dict[str, str] = {
-    "americas": "1",
-    "emea": "2",
-    "pacific": "3",
-    "china": "4",
-    "champions": "5",
-    "masters": "6",
-}
 
 # HTTP headers
 HEADERS = {

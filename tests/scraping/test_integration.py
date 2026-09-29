@@ -80,22 +80,3 @@ class TestSlugMatching:
             )
 
         assert len(matches) == 1
-
-
-class TestRegionFallbackMapping:
-    """Tests for consolidated region fallback mapping."""
-
-    def test_region_fallback_keys_completeness(self):
-        """Test that all regions in REGION_ALIASES have fallback keys."""
-        from valorant_matches.config import REGION_FALLBACK_KEYS
-        from valorant_matches.scraping.discovery import REGION_ALIASES
-
-        for region in REGION_ALIASES:
-            assert region in REGION_FALLBACK_KEYS, f"Missing fallback key for {region}"
-
-    def test_region_fallback_keys_valid_events(self):
-        """Test that all fallback keys point to valid events."""
-        from valorant_matches.config import EVENTS, REGION_FALLBACK_KEYS
-
-        for region, key in REGION_FALLBACK_KEYS.items():
-            assert key in EVENTS, f"Invalid event key '{key}' for region '{region}'"
