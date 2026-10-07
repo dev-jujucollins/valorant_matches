@@ -1,16 +1,15 @@
-# Shared match extraction logic for the async client.
+# Match models and HTML extraction for vlr.gg match pages.
 
 import logging
-import random
 import re
-import time
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Literal
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, tzinfo
+from typing import Any, Literal, get_args
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from valorant_matches.config import RETRY_DELAY
+from valorant_matches.config import BASE_URL
 
 logger = logging.getLogger("valorant_matches")
 
@@ -21,13 +20,12 @@ COUNTDOWN_PATTERN = re.compile(r"^\d+[dhm]\s")
 # Notes VLR appends inside the score element on completed matches, e.g.
 # "final", "vs."/"vs", and the best-of designation "Bo3"/"Bo5".
 SCORE_NOTE_PATTERN = re.compile(r"\b(?:Bo\d+|final|vs)\b\.?", re.IGNORECASE)
+# Score-element text VLR shows before a match has a real score.
+PLACEHOLDER_SCORES = {"tbd", "tbd –", "tbd —", "tbd -", "–", "—", "-"}
 
-# Maximum backoff delay in seconds
-MAX_BACKOFF_DELAY = 30
-
-# Circuit breaker settings
-CIRCUIT_BREAKER_THRESHOLD = 5  # Number of consecutive failures to trip
-CIRCUIT_BREAKER_RESET_TIME = 60  # Seconds before attempting to reset
+UNKNOWN_TEAMS = ["Unknown Team 1", "Unknown Team 2"]
+UNKNOWN_DATE = "Unknown date"
+UNKNOWN_TIME = "Unknown time"
 
 # CSS selectors for extracting match data (fallback strategies)
 TEAM_SELECTORS = [
@@ -53,38 +51,99 @@ DATE_SELECTORS = [
     ("span", "moment-tz-convert"),
 ]
 
+MatchStatus = Literal["live", "upcoming", "completed"]
+MATCH_STATUSES: tuple[MatchStatus, ...] = get_args(MatchStatus)
 
-@dataclass
+
+def _parse_aware_datetime(raw: str) -> datetime:
+    """Parse an ISO timestamp that must carry a timezone.
+
+    Raises:
+        ValueError: When the value is not ISO 8601 or has no timezone.
+    """
+    value = datetime.fromisoformat(raw)
+    if value.tzinfo is None:
+        raise ValueError(f"timestamp has no timezone: {raw}")
+    return value
+
+
+@dataclass(frozen=True)
 class Match:
-    """Represents a Valorant match."""
+    """A Valorant match as shown on its vlr.gg page.
 
-    date: str
-    time: str
+    Attributes:
+        url: Absolute match page URL; identifies the match.
+        team1: First team name.
+        team2: Second team name.
+        status: Whether the match is live, upcoming, or completed.
+        score: Map score such as "2 : 1", or None before the match has one.
+        countdown: Time until start such as "1d 5h", when VLR shows one.
+        starts_at: Scheduled start as an aware datetime, when known.
+        date_label: Source date text, shown when starts_at is unknown.
+        time_label: Source time text, shown when starts_at is unknown.
+    """
+
+    url: str
     team1: str
     team2: str
-    score: str
-    is_live: bool
-    url: str
-    is_upcoming: bool = False
-    start_time: str | None = None
+    status: MatchStatus
+    score: str | None = None
+    countdown: str | None = None
+    starts_at: datetime | None = None
+    date_label: str = UNKNOWN_DATE
+    time_label: str = UNKNOWN_TIME
 
-    @property
-    def status(self) -> Literal["live", "upcoming", "completed"]:
-        """Return the authoritative display status, giving live precedence."""
-        return (
-            "live" if self.is_live else "upcoming" if self.is_upcoming else "completed"
-        )
+    def local_date_time(self, zone: tzinfo | None = None) -> tuple[str, str]:
+        """Return display date and time for a timezone.
 
-    @property
-    def starts_at(self) -> datetime | None:
-        """Return an aware timestamp, or None for legacy/invalid data."""
-        if not self.start_time:
-            return None
-        try:
-            value = datetime.fromisoformat(self.start_time)
-            return value if value.tzinfo is not None else None
-        except ValueError:
-            return None
+        Args:
+            zone: Target timezone; None means the system local timezone.
+
+        Returns:
+            Converted date and time when the start is known, else source labels.
+        """
+        if self.starts_at is None:
+            return self.date_label, self.time_label
+        local = self.starts_at.astimezone(zone)
+        return local.strftime("%B %d, %Y"), local.strftime("%I:%M %p %Z")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to JSON-compatible values.
+
+        Returns:
+            A dictionary accepted by from_dict.
+        """
+        data = asdict(self)
+        data["starts_at"] = self.starts_at.isoformat() if self.starts_at else None
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Match":
+        """Rebuild a match from to_dict output.
+
+        Args:
+            data: Serialized match values.
+
+        Returns:
+            The validated match.
+
+        Raises:
+            TypeError: When fields are missing, unknown, or the wrong type.
+            ValueError: When the status or timestamp is invalid.
+        """
+        values = dict(data)
+        raw_start = values.get("starts_at")
+        if raw_start is not None and not isinstance(raw_start, str):
+            raise TypeError("starts_at must be a string or null")
+        values["starts_at"] = _parse_aware_datetime(raw_start) if raw_start else None
+        match = cls(**values)
+        if match.status not in MATCH_STATUSES:
+            raise ValueError(f"unknown match status: {match.status!r}")
+        text_fields = (match.url, match.team1, match.team2)
+        labels = (match.date_label, match.time_label)
+        if not all(isinstance(value, str) for value in (*text_fields, *labels)):
+            raise TypeError("match text fields must be strings")
+        return match
 
 
 @dataclass
@@ -111,7 +170,7 @@ class ProcessMatchResult:
 class ProcessedMatches:
     """Batch result metadata for processed matches."""
 
-    results: list[tuple[dict, Match]]
+    results: list[Match]
     tbd_count: int = 0
     cache_hits: int = 0
     failed_count: int = 0
@@ -119,107 +178,87 @@ class ProcessedMatches:
     errors: list[FetchError] = field(default_factory=list)
 
 
-class CircuitBreakerOpen(Exception):
-    """Raised when the circuit breaker is open and requests are blocked."""
-
-    pass
-
-
-class CircuitBreakerMixin:
-    """Mixin providing circuit breaker functionality for HTTP clients."""
-
-    _failure_count: int
-    _circuit_open_time: float | None
-
-    def _init_circuit_breaker(self) -> None:
-        """Initialize circuit breaker state. Call in __init__."""
-        self._failure_count = 0
-        self._circuit_open_time = None
-
-    def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter."""
-        delay = RETRY_DELAY * (2**attempt)
-        # Add some jitter (0-25% of delay)
-        jitter = delay * 0.25 * random.random()
-        return min(delay + jitter, MAX_BACKOFF_DELAY)
-
-    def _check_circuit_breaker(self) -> None:
-        """Check if circuit breaker allows requests. Raises CircuitBreakerOpen if not."""
-        if self._circuit_open_time is not None:
-            elapsed = time.monotonic() - self._circuit_open_time
-            if elapsed < CIRCUIT_BREAKER_RESET_TIME:
-                raise CircuitBreakerOpen(
-                    f"Circuit breaker open. Retry in {CIRCUIT_BREAKER_RESET_TIME - elapsed:.0f}s"
-                )
-            # Try to reset the circuit breaker
-            logger.info("Circuit breaker attempting reset...")
-            self._circuit_open_time = None
-            self._failure_count = 0
-
-    def _record_success(self) -> None:
-        """Record a successful request, resetting failure count."""
-        self._failure_count = 0
-        self._circuit_open_time = None
-
-    def _record_failure(self) -> None:
-        """Record a failed request, potentially tripping the circuit breaker."""
-        self._failure_count += 1
-        if self._failure_count >= CIRCUIT_BREAKER_THRESHOLD:
-            self._circuit_open_time = time.monotonic()
-            logger.error(
-                f"Circuit breaker tripped after {self._failure_count} consecutive failures. "
-                f"Blocking requests for {CIRCUIT_BREAKER_RESET_TIME}s"
-            )
-
-
 def extract_teams(soup: BeautifulSoup) -> list[str]:
-    """Extract team names with fallback selectors."""
+    """Extract team names with fallback selectors.
+
+    Args:
+        soup: Parsed match page.
+
+    Returns:
+        Two team names, or UNKNOWN_TEAMS when no selector matches.
+    """
     for tag, class_name in TEAM_SELECTORS:
         elements = soup.find_all(tag, class_=class_name)
-        if elements and len(elements) >= 2:
-            teams = [el.text.strip() for el in elements][:2]
-            teams = [team.split("(")[0].strip() for team in teams]
+        if len(elements) >= 2:
+            teams = [el.text.strip().split("(")[0].strip() for el in elements[:2]]
             if all(teams):
                 return teams
 
     logger.warning("Could not extract team names with any selector")
-    return ["Unknown Team 1", "Unknown Team 2"]
+    return list(UNKNOWN_TEAMS)
 
 
-def extract_score(soup: BeautifulSoup) -> str:
-    """Extract match score with fallback selectors."""
-    # First, check for upcoming match countdown (e.g., "0h 38m", "1d 5h")
-    upcoming_elem = soup.find("span", class_="match-header-vs-note mod-upcoming")
-    if upcoming_elem:
-        countdown = upcoming_elem.text.strip()
-        countdown = " ".join(countdown.split())
-        if countdown:
-            return countdown
+def extract_countdown(soup: BeautifulSoup) -> str | None:
+    """Extract the time-until-start note, such as "1d 5h".
 
+    Args:
+        soup: Parsed match page.
+
+    Returns:
+        The normalized countdown text, or None when absent.
+    """
+    element = soup.find("span", class_="match-header-vs-note mod-upcoming")
+    text = " ".join(element.get_text().split()) if element else ""
+    return text or None
+
+
+def is_placeholder_score(text: str) -> bool:
+    """Return True when score text is a pre-match placeholder, not a score.
+
+    Args:
+        text: Raw or normalized score-element text.
+    """
+    normalized = " ".join(text.lower().split())
+    return (
+        not normalized
+        or normalized in PLACEHOLDER_SCORES
+        or bool(COUNTDOWN_PATTERN.match(normalized))
+    )
+
+
+def extract_score(soup: BeautifulSoup) -> str | None:
+    """Extract the map score with fallback selectors.
+
+    Args:
+        soup: Parsed match page.
+
+    Returns:
+        The score such as "2 : 1", or None when the match has no score yet.
+    """
     # Unscheduled Champions matches have a dash placeholder, not a score.
     if soup.select_one(".match-header-vs-placeholder") and not extract_live_status(
         soup
     ):
-        return "Match has not started yet."
+        return None
 
-    # Then check for completed/live match scores
     for tag, class_name in SCORE_SELECTORS:
         score_elem = soup.find(tag, class_=class_name)
-        if score_elem:
-            score = score_elem.text.strip()
-            score = " ".join(score.split())
-            # Strip the notes (e.g. "final", "vs.", "Bo3") VLR appends inside the
-            # score element, so they don't render between the score and team2.
-            score = SCORE_NOTE_PATTERN.sub("", score)
-            score = " ".join(score.split())
-            if score:
-                return score
-
-    return "Match has not started yet."
+        if not score_elem:
+            continue
+        # Strip the notes (e.g. "final", "vs.", "Bo3") VLR appends inside the
+        # score element, so they don't render between the score and team2.
+        score = " ".join(SCORE_NOTE_PATTERN.sub("", score_elem.text).split())
+        if score and not is_placeholder_score(score):
+            return score
+    return None
 
 
 def extract_live_status(soup: BeautifulSoup) -> bool:
-    """Extract live status with fallback selectors."""
+    """Extract live status with fallback selectors.
+
+    Args:
+        soup: Parsed match page.
+    """
     for tag, class_name in LIVE_SELECTORS:
         if soup.find(tag, class_=class_name):
             return True
@@ -229,11 +268,18 @@ def extract_live_status(soup: BeautifulSoup) -> bool:
 
 
 def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
-    """Extract match date and time with fallback selectors."""
+    """Extract source date and time labels with fallback selectors.
+
+    Args:
+        soup: Parsed match page.
+
+    Returns:
+        Date and time text, or UNKNOWN_DATE and UNKNOWN_TIME.
+    """
     header = soup.select_one(".match-header-date")
     if header and "time tbd" in header.get_text(" ", strip=True).lower():
         date_elem = header.select_one(".moment-tz-convert")
-        date = date_elem.get_text(" ", strip=True) if date_elem else "Unknown date"
+        date = date_elem.get_text(" ", strip=True) if date_elem else UNKNOWN_DATE
         tentative = "tentative" in header.get_text(" ", strip=True).lower()
         return date, "Time TBD (date tentative)" if tentative else "Time TBD"
     for tag, class_name in DATE_SELECTORS:
@@ -243,123 +289,132 @@ def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
             time_elem = date_elem.find_next("div", class_="moment-tz-convert")
             if not time_elem:
                 time_elem = date_elem.find_next("div")
-            match_time = time_elem.text.strip() if time_elem else "Unknown time"
-            if match_date and match_date != "Unknown date":
+            match_time = time_elem.text.strip() if time_elem else UNKNOWN_TIME
+            if match_date and match_date != UNKNOWN_DATE:
                 return match_date, match_time
 
     logger.debug("Could not extract date/time with any selector")
-    return "Unknown date", "Unknown time"
+    return UNKNOWN_DATE, UNKNOWN_TIME
 
 
-def extract_start_time(soup: BeautifulSoup) -> str | None:
-    """Read VLR UTC date strings or Unix timestamps as aware ISO values."""
+def extract_start_time(soup: BeautifulSoup) -> datetime | None:
+    """Read VLR UTC date strings or Unix timestamps as aware UTC datetimes.
+
+    Args:
+        soup: Parsed match page.
+
+    Returns:
+        The scheduled start in UTC, or None when unknown or only tentative.
+    """
     header = soup.select_one(".match-header-date")
     if header and "time tbd" in header.get_text(" ", strip=True).lower():
         return None  # The source attribute is a placeholder, not a scheduled instant.
     for element in soup.select(".moment-tz-convert[data-utc-ts]"):
+        raw = str(element.get("data-utc-ts"))
         try:
-            raw = str(element.get("data-utc-ts"))
             try:
                 value = datetime.fromisoformat(raw)
-                if value.tzinfo is None:
-                    value = value.replace(tzinfo=UTC)
-                return value.astimezone(UTC).isoformat()
             except ValueError:
-                return datetime.fromtimestamp(float(raw), UTC).isoformat()
+                return datetime.fromtimestamp(float(raw), UTC)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.astimezone(UTC)
         except (ValueError, OverflowError, OSError):
             continue
     return None
 
 
-def extract_match_data(soup: BeautifulSoup) -> tuple[list[str], str, bool]:
-    """Extract team names, score, and live status from match page."""
-    teams = extract_teams(soup)
-    score = extract_score(soup)
-    is_live = extract_live_status(soup)
-    return teams, score, is_live
-
-
 def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchResult:
-    """Build a Match object from a match page."""
-    teams, score, is_live = extract_match_data(soup)
+    """Build a Match from a parsed match page.
+
+    Args:
+        soup: Parsed match page.
+        match_url: Absolute URL of the page.
+
+    Returns:
+        The match, a TBD marker when teams are undecided, or a parse error.
+    """
+    teams = extract_teams(soup)
     if "TBD" in teams:
         return ProcessMatchResult(is_tbd=True)
-
-    if teams == ["Unknown Team 1", "Unknown Team 2"]:
+    if teams == UNKNOWN_TEAMS:
         return ProcessMatchResult(
             error=FetchError(match_url, "parse", "Match page is missing team names")
         )
-    match_date, match_time = extract_date_time(soup)
-    is_upcoming = is_upcoming_match(score)
+
+    is_live = extract_live_status(soup)
+    score = extract_score(soup)
+    countdown = None if is_live else extract_countdown(soup)
+    status: MatchStatus
+    if is_live:
+        status = "live"
+    elif score is None or countdown:
+        status = "upcoming"
+    else:
+        status = "completed"
+
+    date_label, time_label = extract_date_time(soup)
     return ProcessMatchResult(
         match=Match(
-            date=match_date,
-            time=match_time,
+            url=match_url,
             team1=teams[0],
             team2=teams[1],
+            status=status,
             score=score,
-            is_live=bool(is_live),
-            url=match_url,
-            is_upcoming=is_upcoming and not is_live,
-            start_time=extract_start_time(soup),
+            countdown=countdown,
+            starts_at=extract_start_time(soup),
+            date_label=date_label,
+            time_label=time_label,
         )
     )
 
 
 def should_use_cached_match(match: Match) -> bool:
-    """Return True when cached match data is safe to display."""
+    """Return True when cached match data is safe to display.
+
+    Only finished matches are cached; anything else is refetched.
+
+    Args:
+        match: A match rebuilt from the cache.
+    """
     return (
-        not match.is_live
-        and not match.is_upcoming
-        and not is_upcoming_match(match.score)
+        match.status == "completed"
+        and match.score is not None
+        and not is_placeholder_score(match.score)
     )
 
 
 def extract_event_slug(event_url: str) -> str | None:
-    """Extract event slug from a VLR event matches URL."""
+    """Extract the event slug from a VLR event matches URL.
+
+    Args:
+        event_url: URL such as https://vlr.gg/event/matches/1/vct-2026-kickoff/.
+    """
     slug_match = EVENT_SLUG_PATTERN.search(event_url)
     if slug_match:
         return slug_match.group(1)
     return None
 
 
-def find_event_match_links(
+def find_event_match_urls(
     soup: BeautifulSoup,
-    slug_pattern: re.Pattern | None = None,
-) -> list[dict]:
-    """Find match links for an event page."""
-    match_links = []
+    slug_pattern: re.Pattern[str] | None = None,
+) -> list[str]:
+    """Find absolute match URLs on an event page, in page order.
+
+    Args:
+        soup: Parsed event matches page.
+        slug_pattern: Optional pattern a link must contain to belong to the event.
+
+    Returns:
+        Unique absolute match URLs.
+    """
+    urls: dict[str, None] = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        if not isinstance(href, str):
-            continue
-        if not MATCH_URL_PATTERN.match(href):
+        if not isinstance(href, str) or not MATCH_URL_PATTERN.match(href):
             continue
         if slug_pattern and not slug_pattern.search(href.lower()):
             continue
-        match_links.append(link)
-    return match_links
-
-
-def format_eta(score: str) -> str:
-    """Format ETA for upcoming matches from score field.
-
-    The score field for upcoming matches contains countdown text like
-    "0h 42m", "1d 5h", or "Match has not started yet."
-    This extracts and formats the time until the match starts.
-    """
-    # Check if score contains a countdown pattern (e.g., "0h 42m", "1d 5h")
-    if COUNTDOWN_PATTERN.match(score):
-        return f"in {score}"
-    # Fallback for matches without countdown info
-    return "UPCOMING"
-
-
-def is_upcoming_match(score: str) -> bool:
-    """Determine if a match is upcoming based on its score text."""
-    normalized = " ".join(score.lower().split())
-    return (
-        normalized in {"tbd", "tbd –", "tbd —", "tbd -", "–", "—", "-"}
-        or normalized.startswith("match has not started")
-        or bool(COUNTDOWN_PATTERN.match(score))
-    )
+        urls[urljoin(BASE_URL, href)] = None
+    return list(urls)

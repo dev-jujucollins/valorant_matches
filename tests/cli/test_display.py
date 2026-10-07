@@ -1,389 +1,282 @@
-# Tests for non-interactive CLI display workflows.
+# Tests for match-list helpers and the CLI workflow.
 
-import argparse
+from dataclasses import replace
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
+import pytest
+
+from valorant_matches.cli.app import parse_args
 from valorant_matches.cli.display import (
     MatchStats,
+    filter_matches_by_favorites,
     filter_matches_by_team,
-    get_display_options,
-    get_view_mode,
     group_matches,
+    print_empty_results,
+    print_error_summary,
     run_cli_mode,
     sort_matches,
 )
-from valorant_matches.scraping.matches import Match, ProcessedMatches
+from valorant_matches.cli.options import RunOptions, build_run_options
+from valorant_matches.output.formatter import Formatter
+from valorant_matches.profile import UserProfile
+from valorant_matches.scraping.matches import FetchError, Match, ProcessedMatches
 from valorant_matches.scraping.runner import EventFetchResult
 
+BASE_MATCH = Match(
+    url="https://vlr.gg/123",
+    team1="Team A",
+    team2="Team B",
+    status="completed",
+    score="2-1",
+    date_label="Jan 15",
+    time_label="12:00",
+)
 
-def make_match(
-    date: str = "Jan 15",
-    time: str = "12:00",
-    team1: str = "Team A",
-    team2: str = "Team B",
-    score: str = "2-1",
-    is_live: bool = False,
-    is_upcoming: bool = False,
-    url: str = "https://vlr.gg/123",
-) -> Match:
-    """Helper to create Match objects for testing."""
-    return Match(
-        date=date,
-        time=time,
-        team1=team1,
-        team2=team2,
-        score=score,
-        is_live=is_live,
-        is_upcoming=is_upcoming,
-        url=url,
+
+def make_match(**overrides: Any) -> Match:
+    """Build a match for display tests."""
+    return replace(BASE_MATCH, **overrides)
+
+
+def opts_for(*flags: str) -> RunOptions:
+    """Resolve CLI flags without saved state."""
+    return build_run_options(parse_args(list(flags)), UserProfile())
+
+
+EVENT = SimpleNamespace(
+    event_id="1",
+    name="VCT Americas",
+    status="ongoing",
+    url="https://vlr.gg/event/matches/1/vct-americas/",
+    slug="vct-americas",
+)
+
+
+def fetch_result(*matches: Match, **counts) -> EventFetchResult:
+    """Wrap matches in a successful fetch result."""
+    return EventFetchResult(
+        total_links=counts.pop("total_links", len(matches)),
+        processed=ProcessedMatches(list(matches), **counts),
     )
 
 
 class TestMatchStats:
-    """Tests for MatchStats dataclass."""
+    """Tests for MatchStats.add_fetch."""
 
-    def test_count_match_live(self):
-        """Test counting live match."""
+    def test_event_error_counts_as_failure(self) -> None:
+        """An event-level error is one failure with its error kept."""
         stats = MatchStats()
-        match = make_match(is_live=True)
-        stats.count_match(match)
-        assert stats.live_count == 1
-        assert stats.upcoming_count == 0
-        assert stats.completed_count == 0
+        error = FetchError("https://vlr.gg/e", "http", "HTTP 503")
+        stats.add_fetch(EventFetchResult(error=error))
+        assert stats.failed == 1 and stats.errors == [error]
 
-    def test_count_match_upcoming(self):
-        """Test counting upcoming match."""
+    def test_processed_counts_accumulate(self) -> None:
+        """Counts add up across events."""
         stats = MatchStats()
-        match = make_match(is_upcoming=True)
-        stats.count_match(match)
-        assert stats.live_count == 0
-        assert stats.upcoming_count == 1
-        assert stats.completed_count == 0
-
-    def test_count_match_completed(self):
-        """Test counting completed match."""
-        stats = MatchStats()
-        match = make_match()
-        stats.count_match(match)
-        assert stats.live_count == 0
-        assert stats.upcoming_count == 0
-        assert stats.completed_count == 1
-
-
-class TestGetViewMode:
-    """Tests for get_view_mode function."""
-
-    def test_view_mode_upcoming(self):
-        """Test view mode is upcoming when flag is set."""
-        args = argparse.Namespace(upcoming=True, results=False)
-        assert get_view_mode(args) == "upcoming"
-
-    def test_view_mode_results(self):
-        """Test view mode is results when flag is set."""
-        args = argparse.Namespace(upcoming=False, results=True)
-        assert get_view_mode(args) == "results"
-
-    def test_view_mode_all(self):
-        """Test view mode is all when no flags are set."""
-        args = argparse.Namespace(upcoming=False, results=False)
-        assert get_view_mode(args) == "all"
-
-
-class TestGetDisplayOptions:
-    """Tests for get_display_options function."""
-
-    def test_display_options_default(self):
-        """Test display options with no flags set."""
-        args = argparse.Namespace()
-        options = get_display_options(args)
-        assert options.compact is False
-        assert options.group_by is None
-        assert options.sort_by is None
-
-    def test_display_options_compact(self):
-        """Test display options with compact flag."""
-        args = argparse.Namespace(compact=True, group_by=None, sort=None)
-        options = get_display_options(args)
-        assert options.compact is True
-
-    def test_display_options_group_by(self):
-        """Test display options with group_by flag."""
-        args = argparse.Namespace(compact=False, group_by="status", sort=None)
-        options = get_display_options(args)
-        assert options.group_by == "status"
-
-    def test_display_options_sort(self):
-        """Test display options with sort flag."""
-        args = argparse.Namespace(compact=False, group_by=None, sort="date")
-        options = get_display_options(args)
-        assert options.sort_by == "date"
-
-
-class TestSortMatches:
-    """Tests for sort_matches function."""
-
-    def test_sort_matches_no_sort(self):
-        """Test that no sorting returns original order."""
-        results = [
-            ({"href": "/1"}, make_match(date="Jan 15", team1="Team Z")),
-            ({"href": "/2"}, make_match(date="Jan 10", team1="Team A")),
-        ]
-        sorted_results = sort_matches(results, None)
-        assert sorted_results == results
-
-    def test_sort_matches_by_date(self):
-        """Test sorting by date."""
-        results = [
-            ({"href": "/1"}, make_match(date="Jan 15", team1="Team A")),
-            ({"href": "/2"}, make_match(date="Jan 10", team1="Team C")),
-        ]
-        sorted_results = sort_matches(results, "date")
-        assert sorted_results[0][1].date == "Jan 10"
-        assert sorted_results[1][1].date == "Jan 15"
-
-    def test_sort_matches_by_team(self):
-        """Test sorting by team name."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Zeta", team2="Alpha")),
-            ({"href": "/2"}, make_match(team1="Alpha", team2="Beta")),
-        ]
-        sorted_results = sort_matches(results, "team")
-        # Alpha comes before Zeta
-        assert sorted_results[0][1].team1 == "Alpha"
-
-
-class TestGroupMatches:
-    """Tests for group_matches function."""
-
-    def test_group_matches_no_group(self):
-        """Test that no grouping returns all matches under 'all'."""
-        results = [
-            ({"href": "/1"}, make_match()),
-            ({"href": "/2"}, make_match()),
-        ]
-        grouped = group_matches(results, None)
-        assert "all" in grouped
-        assert len(grouped["all"]) == 2
-
-    def test_group_matches_by_status(self):
-        """Test grouping by match status."""
-        results = [
-            ({"href": "/1"}, make_match(is_live=True)),
-            ({"href": "/2"}, make_match(is_upcoming=True)),
-            ({"href": "/3"}, make_match()),
-        ]
-        grouped = group_matches(results, "status")
-        assert "live" in grouped
-        assert "upcoming" in grouped
-        assert "completed" in grouped
-        assert len(grouped["live"]) == 1
-        assert len(grouped["upcoming"]) == 1
-        assert len(grouped["completed"]) == 1
-
-    def test_group_matches_by_date(self):
-        """Test grouping by date."""
-        results = [
-            ({"href": "/1"}, make_match(date="Jan 15")),
-            ({"href": "/2"}, make_match(date="Jan 15")),
-            ({"href": "/3"}, make_match(date="Jan 16")),
-        ]
-        grouped = group_matches(results, "date")
-        assert "Jan 15" in grouped
-        assert "Jan 16" in grouped
-        assert len(grouped["Jan 15"]) == 2
-        assert len(grouped["Jan 16"]) == 1
-
-
-class TestFilterMatchesByTeam:
-    """Tests for filter_matches_by_team function."""
-
-    def test_filter_no_team(self):
-        """Test that no filter returns all matches."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-        ]
-        filtered = filter_matches_by_team(results, None)
-        assert len(filtered) == 2
-
-    def test_filter_by_team_name(self):
-        """Test filtering by exact team name."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-            ({"href": "/3"}, make_match(team1="Sentinels", team2="LOUD")),
-        ]
-        filtered = filter_matches_by_team(results, "Sentinels")
-        assert len(filtered) == 2
-
-    def test_filter_case_insensitive(self):
-        """Test that filter is case insensitive."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-        ]
-        filtered = filter_matches_by_team(results, "sentinels")
-        assert len(filtered) == 1
-        assert filtered[0][1].team1 == "Sentinels"
-
-    def test_filter_partial_match(self):
-        """Test filtering with partial team name."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-        ]
-        filtered = filter_matches_by_team(results, "Cloud")
-        assert len(filtered) == 1
-        assert filtered[0][1].team2 == "Cloud9"
-
-    def test_filter_matches_opponent(self):
-        """Test that filter also matches opponent team."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-        ]
-        filtered = filter_matches_by_team(results, "Cloud9")
-        assert len(filtered) == 1
-
-    def test_filter_no_matches(self):
-        """Test filter with no matching team."""
-        results = [
-            ({"href": "/1"}, make_match(team1="Sentinels", team2="Cloud9")),
-            ({"href": "/2"}, make_match(team1="LOUD", team2="NRG")),
-        ]
-        filtered = filter_matches_by_team(results, "Fnatic")
-        assert len(filtered) == 0
-
-
-def _make_cli_args(**overrides) -> argparse.Namespace:
-    """Build a CLI args namespace with sensible defaults."""
-    values = {
-        "region": "americas",
-        "no_cache": False,
-        "upcoming": False,
-        "results": False,
-        "refresh": False,
-        "team": None,
-        "export": None,
-        "compact": False,
-        "group_by": None,
-        "sort": None,
-        "interactive": False,
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
-def _make_cli_formatter() -> Mock:
-    formatter = Mock()
-    formatter.info.side_effect = lambda text, bold=False: text
-    formatter.warning.side_effect = lambda text, bold=False: text
-    formatter.error.side_effect = lambda text, bold=False: text
-    formatter.muted.side_effect = lambda text, bold=False: text
-    formatter.print_stats_footer = Mock()
-    return formatter
-
-
-def _make_fetch_result(**overrides) -> EventFetchResult:
-    processed = ProcessedMatches(
-        results=[
-            (
-                {"href": "/1/match"},
-                make_match(team1="Sentinels", team2="Cloud9"),
+        for _ in range(2):
+            stats.add_fetch(
+                fetch_result(
+                    make_match(),
+                    total_links=3,
+                    cache_hits=1,
+                    tbd_count=1,
+                    skipped_count=1,
+                    failed_count=1,
+                )
             )
-        ],
-        tbd_count=0,
-        cache_hits=1,
+        assert (stats.total, stats.cache_hits, stats.tbd_count) == (6, 2, 2)
+        assert (stats.skipped_count, stats.failed) == (2, 2)
+
+
+class TestSortAndGroup:
+    """Tests for sort_matches and group_matches."""
+
+    def test_no_sort_keeps_order(self) -> None:
+        """No sort returns the input order."""
+        matches = [make_match(team1="Z"), make_match(team1="A")]
+        assert sort_matches(matches, None) == matches
+
+    def test_sort_by_date(self) -> None:
+        """Label-only dates still sort chronologically."""
+        later, earlier = (
+            make_match(date_label="Jan 15"),
+            make_match(date_label="Jan 10"),
+        )
+        assert sort_matches([later, earlier], "date") == [earlier, later]
+
+    def test_sort_by_team(self) -> None:
+        """Team sort ignores case."""
+        zeta, alpha = make_match(team1="Zeta"), make_match(team1="alpha")
+        assert sort_matches([zeta, alpha], "team") == [alpha, zeta]
+
+    def test_sort_prefers_timestamps(self) -> None:
+        """Known instants sort across offsets; label times break ties."""
+        early = make_match(starts_at=datetime(2026, 1, 2, 1, tzinfo=UTC))
+        late = make_match(starts_at=datetime(2026, 1, 2, 4, tzinfo=UTC))
+        assert sort_matches([late, early], "date") == [early, late]
+        morning = make_match(time_label="2:00 AM")
+        noon = make_match(time_label="11:00 AM")
+        assert sort_matches([noon, morning], "date") == [morning, noon]
+
+    def test_group_none(self) -> None:
+        """No grouping puts everything under "all"."""
+        matches = [make_match(), make_match()]
+        assert group_matches(matches, None) == {"all": matches}
+
+    def test_group_by_status(self) -> None:
+        """Status groups follow first appearance."""
+        live = make_match(status="live")
+        upcoming = make_match(status="upcoming", score=None)
+        done = make_match()
+        grouped = group_matches([live, upcoming, done], "status")
+        assert list(grouped) == ["live", "upcoming", "completed"]
+
+    def test_group_by_local_date(self) -> None:
+        """Date groups use the display timezone."""
+        match = make_match(starts_at=datetime(2026, 1, 2, 1, tzinfo=UTC))
+        grouped = group_matches([match], "date", ZoneInfo("America/Los_Angeles"))
+        assert list(grouped) == ["January 01, 2026"]
+
+
+class TestFilters:
+    """Tests for team and favorite filters."""
+
+    MATCHES = [
+        make_match(team1="Sentinels", team2="Cloud9"),
+        make_match(team1="LOUD", team2="NRG"),
+    ]
+
+    @pytest.mark.parametrize(
+        ("team", "expected"),
+        [(None, 2), ("sentinels", 1), ("Cloud", 1), ("NRG", 1), ("Fnatic", 0)],
     )
-    defaults = {"total_links": 1, "processed": processed}
-    defaults.update(overrides)
-    return EventFetchResult(**defaults)
+    def test_team_filter(self, team: str | None, expected: int) -> None:
+        """Partial, case-insensitive names match either side."""
+        assert len(filter_matches_by_team(self.MATCHES, team)) == expected
+
+    def test_favorites_need_exact_names(self) -> None:
+        """Favorites compare whole names, ignoring case."""
+        assert filter_matches_by_favorites(self.MATCHES, ["loud"]) == [self.MATCHES[1]]
+        assert filter_matches_by_favorites(self.MATCHES, ["LOU"]) == []
+
+
+class TestMessages:
+    """Tests for shared empty-result and error messages."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "cli_text", "interactive_text"),
+        [
+            ({"view_mode": "all", "team": "X"}, "--team", "Press f"),
+            ({"view_mode": "upcoming"}, "removing --upcoming", "all matches mode"),
+            ({"view_mode": "results"}, "Try --upcoming", "upcoming mode"),
+            ({"view_mode": "all"}, "--list-regions", "Press r"),
+        ],
+    )
+    def test_hints_match_mode(
+        self, capsys, kwargs: dict, cli_text: str, interactive_text: str
+    ) -> None:
+        """Hints mention flags in CLI mode and keys in interactive mode."""
+        print_empty_results(Formatter(), **kwargs)
+        assert cli_text in capsys.readouterr().out
+        print_empty_results(Formatter(), interactive=True, **kwargs)
+        assert interactive_text in capsys.readouterr().out
+
+    def test_today_and_favorites_messages(self, capsys) -> None:
+        """Special filters explain themselves."""
+        print_empty_results(Formatter(), view_mode="all", today_only=True)
+        print_empty_results(Formatter(), view_mode="all", favorites_only=True)
+        output = capsys.readouterr().out
+        assert "known start times today" in output
+        assert "saved favorite teams" in output
+
+    def test_error_summary_truncates(self, capsys) -> None:
+        """Only the first five errors are listed."""
+        errors = [
+            FetchError(f"https://vlr.gg/{i}", "http", "HTTP 500") for i in range(7)
+        ]
+        print_error_summary(Formatter(), errors)
+        output = capsys.readouterr().out
+        assert "Errors encountered (7)" in output
+        assert "https://vlr.gg/4" in output and "https://vlr.gg/5" not in output
+        assert "... and 2 more errors" in output
 
 
 class TestRunCliMode:
-    """Tests for CLI mode flow."""
+    """Tests for the CLI flow."""
 
-    def test_cli_mode_exits_after_results_by_default(self):
-        """CLI mode should not enter interactive mode unless requested."""
-        formatter = _make_cli_formatter()
-        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
-        event.slug = "vct-americas"
-        args = _make_cli_args()
-        run_interactive = Mock(return_value=0)
+    def _run(self, opts: RunOptions, *results: EventFetchResult) -> int:
+        with (
+            patch("valorant_matches.cli.display.select_events", return_value=[EVENT]),
+            patch("valorant_matches.cli.display.fetch_event_data", side_effect=results),
+        ):
+            return run_cli_mode(opts, Formatter(), Mock(is_stale=False))
 
+    def test_success_prints_matches_and_footer(self, capsys) -> None:
+        """A successful run lists matches and a footer, exit 0."""
+        match = make_match(team1="Sentinels", team2="Cloud9")
+        assert self._run(opts_for("-r", "am"), fetch_result(match, cache_hits=1)) == 0
+        output = capsys.readouterr().out
+        assert "Sentinels vs Cloud9" in output
+        assert "Displayed: 1 match | Cache hits: 1" in output
+
+    def test_failed_count_from_processing(self, capsys) -> None:
+        """Failures are reported from processing even if filters hide matches."""
+        result = fetch_result(make_match(), total_links=3, failed_count=2)
+        assert self._run(opts_for("-r", "am", "--team", "Fnatic"), result) == 1
+        output = capsys.readouterr().out
+        assert "No matches found for team filter: Fnatic" in output
+        assert "Failed: 2" in output
+
+    def test_compact_grouped_output(self, capsys) -> None:
+        """Compact and grouping options reach the formatter."""
+        result = fetch_result(make_match(status="live"))
+        assert (
+            self._run(opts_for("-r", "am", "--compact", "--group-by", "status"), result)
+            == 0
+        )
+        output = capsys.readouterr().out
+        assert "LIVE MATCHES" in output
+        assert "Team A 2-1 Team B | ● LIVE" in output
+        assert "Live: 1" in output
+
+    def test_no_events_is_error(self, capsys) -> None:
+        """An unknown target exits 1 with guidance."""
+        with patch("valorant_matches.cli.display.select_events", return_value=[]):
+            code = run_cli_mode(opts_for("-r", "am"), Formatter(), Mock(is_stale=False))
+        assert code == 1
+        assert "No events found for: am" in capsys.readouterr().out
+
+    def test_matches_deduplicated_across_events(self, capsys) -> None:
+        """The same match from two events is shown once."""
+        match = make_match()
         with (
             patch(
-                "valorant_matches.cli.display.fetch_event_data",
-                return_value=_make_fetch_result(),
+                "valorant_matches.cli.display.select_events",
+                return_value=[
+                    EVENT,
+                    SimpleNamespace(**{**vars(EVENT), "event_id": "2"}),
+                ],
             ),
-            patch(
-                "valorant_matches.cli.display.get_event_for_region", return_value=event
-            ),
-        ):
-            exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
-
-        assert exit_code == 0
-        run_interactive.assert_not_called()
-        formatter.print_stats_footer.assert_called_once()
-
-    def test_cli_mode_enters_interactive_when_requested(self):
-        """--interactive should opt into post-results interactive mode."""
-        formatter = _make_cli_formatter()
-        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
-        event.slug = "vct-americas"
-        args = _make_cli_args(interactive=True)
-        run_interactive = Mock(return_value=7)
-
-        with (
             patch(
                 "valorant_matches.cli.display.fetch_event_data",
-                return_value=_make_fetch_result(),
-            ),
-            patch(
-                "valorant_matches.cli.display.get_event_for_region", return_value=event
+                side_effect=[fetch_result(match), fetch_result(match)],
             ),
         ):
-            exit_code = run_cli_mode(args, formatter, Mock(), run_interactive)
-
-        assert exit_code == 7
-        run_interactive.assert_called_once()
-
-    def test_cli_mode_reports_failed_count_from_processing(self):
-        """Failed stat should come from processing, not be inferred from filters."""
-        formatter = _make_cli_formatter()
-        event = Mock(name="VCT Americas", status="ongoing", url="https://vlr.gg/e")
-        event.slug = "vct-americas"
-        # Team filter removes the only result; failed must stay at the real value.
-        args = _make_cli_args(team="Fnatic")
-
-        fetch_result = _make_fetch_result(total_links=3)
-        fetch_result.processed.failed_count = 2
-
-        with (
-            patch(
-                "valorant_matches.cli.display.fetch_event_data",
-                return_value=fetch_result,
-            ),
-            patch(
-                "valorant_matches.cli.display.get_event_for_region", return_value=event
-            ),
-        ):
-            exit_code = run_cli_mode(args, formatter, Mock(), Mock())
-
-        assert exit_code == 1
-        footer_kwargs = formatter.print_stats_footer.call_args.kwargs
-        assert footer_kwargs["failed"] == 2
+            run_cli_mode(opts_for("-r", "am"), Formatter(), Mock(is_stale=False))
+        assert "Displayed: 1 match" in capsys.readouterr().out
 
 
 class TestParseDateYearInference:
     """Tests for year inference on yearless dates."""
 
-    def _patched_parse(self, date_str: str, fake_today):
-        from datetime import datetime as real_datetime
-
+    def _patched_parse(self, date_str: str, fake_today: datetime) -> datetime:
         from valorant_matches.cli.display import _parse_date
 
-        class FakeDateTime(real_datetime):
+        class FakeDateTime(datetime):
             @classmethod
             def now(cls, tz=None):
                 return fake_today
@@ -391,20 +284,16 @@ class TestParseDateYearInference:
         with patch("valorant_matches.cli.display.datetime", FakeDateTime):
             return _parse_date(date_str)
 
-    def test_january_date_in_december_resolves_to_next_year(self):
-        from datetime import datetime
+    def test_january_date_in_december_resolves_to_next_year(self) -> None:
+        assert self._patched_parse("Jan 10", datetime(2025, 12, 30)).year == 2026
 
-        parsed = self._patched_parse("Jan 10", datetime(2025, 12, 30))
-        assert parsed.year == 2026
+    def test_december_date_in_january_resolves_to_previous_year(self) -> None:
+        assert self._patched_parse("Dec 28", datetime(2026, 1, 5)).year == 2025
 
-    def test_december_date_in_january_resolves_to_previous_year(self):
-        from datetime import datetime
+    def test_same_season_date_keeps_current_year(self) -> None:
+        assert self._patched_parse("Jun 15", datetime(2026, 6, 10)).year == 2026
 
-        parsed = self._patched_parse("Dec 28", datetime(2026, 1, 5))
-        assert parsed.year == 2025
+    def test_unparseable_sorts_last(self) -> None:
+        from valorant_matches.cli.display import _parse_date
 
-    def test_same_season_date_keeps_current_year(self):
-        from datetime import datetime
-
-        parsed = self._patched_parse("Jun 15", datetime(2026, 6, 10))
-        assert parsed.year == 2026
+        assert _parse_date("Unknown date") == datetime.max

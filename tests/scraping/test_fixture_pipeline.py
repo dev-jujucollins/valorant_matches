@@ -2,18 +2,28 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from bs4 import BeautifulSoup
 
 from valorant_matches.cli.app import parse_args
-from valorant_matches.cli.display import run_cli_mode
+from valorant_matches.cli.display import filter_today, run_cli_mode
+from valorant_matches.cli.options import build_run_options
 from valorant_matches.output.formatter import Formatter
-from valorant_matches.scraping.matches import extract_start_time
+from valorant_matches.profile import UserProfile
+from valorant_matches.scraping.client import AsyncValorantClient, process_matches_async
+from valorant_matches.scraping.matches import (
+    Match,
+    extract_start_time,
+    find_event_match_urls,
+)
 from valorant_matches.scraping.runner import _fetch_event_data
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "vlr"
+CHAMPIONS_URL = "https://vlr.gg/753444/champions"
 
 
 def response_for(name: str, status: int = 200) -> Mock:
@@ -29,6 +39,14 @@ def fixture_get(url: str) -> Mock:
     return response_for(name)
 
 
+def no_rate_limit():
+    """Skip request spacing in fixture runs."""
+    return patch(
+        "valorant_matches.scraping.http.AsyncRateLimiter.acquire",
+        new_callable=AsyncMock,
+    )
+
+
 @pytest.mark.parametrize(
     ("mode", "statuses", "skipped"),
     [
@@ -39,13 +57,7 @@ def fixture_get(url: str) -> Mock:
 )
 async def test_fixture_pipeline(mode: str, statuses: list[str], skipped: int) -> None:
     """Real parsing keeps errors, TBD, and intentional filters distinct."""
-    with (
-        patch("aiohttp.ClientSession.get", side_effect=fixture_get),
-        patch(
-            "valorant_matches.scraping.client.AsyncRateLimiter.acquire",
-            new_callable=AsyncMock,
-        ),
-    ):
+    with patch("aiohttp.ClientSession.get", side_effect=fixture_get), no_rate_limit():
         result = await _fetch_event_data(
             "https://vlr.gg/event/matches/1/fixture-event/",
             "fixture-event",
@@ -55,11 +67,29 @@ async def test_fixture_pipeline(mode: str, statuses: list[str], skipped: int) ->
         )
     assert result.error is None
     assert result.total_links == 5
-    assert [match.status for _, match in result.processed.results] == statuses
+    assert [match.status for match in result.processed.results] == statuses
     assert result.processed.skipped_count == skipped
     assert result.processed.tbd_count == 1
     assert result.processed.failed_count == 1
     assert result.processed.errors[0].error_type == "parse"
+
+
+async def test_fixture_fields() -> None:
+    """Saved markup yields separate score, countdown, and start values."""
+    with patch("aiohttp.ClientSession.get", side_effect=fixture_get), no_rate_limit():
+        result = await _fetch_event_data(
+            "https://vlr.gg/event/matches/1/fixture-event/",
+            "fixture-event",
+            "all",
+            False,
+            False,
+        )
+    completed, live, upcoming = result.processed.results
+    assert completed.score and not completed.countdown
+    assert live.score == "1 : 1"
+    assert upcoming.score is None and upcoming.countdown == "1d 5h"
+    assert upcoming.starts_at is not None
+    assert upcoming.starts_at.isoformat() == "2025-12-09T04:00:00+00:00"
 
 
 @pytest.mark.parametrize("export", [False, True])
@@ -68,25 +98,23 @@ def test_fixture_cli_partial_result(
 ) -> None:
     """Run the synchronous CLI through mocked HTTP and real parsing/export."""
     output = tmp_path / "matches.json"
-    argv = ["valorant-matches", "-r", "americas", "--no-cache"]
+    argv = ["-r", "americas", "--no-cache"]
     if export:
         argv += ["--export", "json", "--output", str(output)]
-    with patch("sys.argv", argv):
-        args = parse_args()
-    event = Mock(
+    opts = build_run_options(parse_args(argv), UserProfile())
+    event = SimpleNamespace(
+        event_id="1",
+        name="Fixture event",
         url="https://vlr.gg/event/matches/1/fixture-event/",
         slug="fixture-event",
         status="ongoing",
     )
     with (
-        patch("valorant_matches.cli.display.get_event_for_region", return_value=event),
+        patch("valorant_matches.cli.display.select_events", return_value=[event]),
         patch("aiohttp.ClientSession.get", side_effect=fixture_get),
-        patch(
-            "valorant_matches.scraping.client.AsyncRateLimiter.acquire",
-            new_callable=AsyncMock,
-        ),
+        no_rate_limit(),
     ):
-        code = run_cli_mode(args, Formatter(), Mock(), Mock())
+        code = run_cli_mode(opts, Formatter(), Mock(is_stale=False))
     assert code == 1
     text = capsys.readouterr().out
     assert "missing team names" in text
@@ -101,8 +129,9 @@ def test_fixture_cli_partial_result(
 @pytest.mark.parametrize("status", [200, 404])
 async def test_empty_page_vs_http_failure(status: int) -> None:
     """An empty successful response differs from an HTTP failure."""
-    response = response_for("malformed", status)
-    with patch("aiohttp.ClientSession.get", return_value=response):
+    with patch(
+        "aiohttp.ClientSession.get", return_value=response_for("malformed", status)
+    ):
         result = await _fetch_event_data(
             "https://vlr.gg/event/test", None, "all", False, False
         )
@@ -129,79 +158,65 @@ def test_source_timestamps(raw: str, expected: str | None) -> None:
     soup = BeautifulSoup(
         f'<div class="moment-tz-convert" data-utc-ts="{raw}"></div>', "lxml"
     )
-    assert extract_start_time(soup) == expected
+    start = extract_start_time(soup)
+    assert (start.isoformat() if start else None) == expected
 
 
 def test_match_links_skip_non_string_href() -> None:
     """Unexpected href types are safely ignored."""
-    from valorant_matches.scraping.matches import find_event_match_links
-
     soup = BeautifulSoup(
         '<a href="/1/match">Match</a>', "lxml", multi_valued_attributes={"a": ["href"]}
     )
-    assert find_event_match_links(soup) == []
+    assert find_event_match_urls(soup) == []
 
 
 @pytest.mark.parametrize("mode, count", [("all", 1), ("upcoming", 1), ("results", 0)])
 async def test_champions_tentative_schedule(mode: str, count: int) -> None:
     """Tentative Champions fixtures stay upcoming without invented start times."""
-    from valorant_matches.cli.display import localize_matches
-    from valorant_matches.scraping.client import (
-        AsyncValorantClient,
-        process_matches_async,
-    )
-
     async with AsyncValorantClient(cache_enabled=False) as client:
         with patch(
             "aiohttp.ClientSession.get",
             return_value=response_for("champions-tentative"),
         ):
-            processed = await process_matches_async(
-                client, [{"href": "/753444/champions"}], mode
-            )
+            processed = await process_matches_async(client, [CHAMPIONS_URL], mode)
     assert len(processed.results) == count
     assert processed.failed_count == 0
     if count:
-        match = localize_matches(processed.results, "America/Los_Angeles", False)[0][1]
+        match = processed.results[0]
         assert match.status == "upcoming"
-        assert match.start_time is None
-        assert match.date == "Saturday, September 26"
-        assert match.time == "Time TBD (date tentative)"
-        output = Formatter().format_match_full(match)
+        assert match.starts_at is None
+        assert match.local_date_time(ZoneInfo("America/Los_Angeles")) == (
+            "Saturday, September 26",
+            "Time TBD (date tentative)",
+        )
+        output = Formatter().format_match_full(match).plain
         assert "UPCOMING" in output
         assert "Score:" not in output
         assert "Time TBD" in output
-        assert not localize_matches(processed.results, "UTC", True)
+        assert not filter_today(processed.results, ZoneInfo("UTC"))
 
 
 async def test_champions_rejects_previously_miscached_score() -> None:
-    """Refetch old cache records that mislabeled TBD matches as completed."""
-    from dataclasses import asdict
-
-    from valorant_matches.scraping.client import AsyncValorantClient
-    from valorant_matches.scraping.matches import Match
-
+    """Refetch cache records that mislabeled TBD matches as completed."""
     stale = Match(
-        "September 25, 2026",
-        "10:00 PM PDT",
-        "100 Thieves",
-        "T1",
-        "TBD –",
-        False,
-        "https://vlr.gg/753444/champions",
+        url=CHAMPIONS_URL,
+        team1="100 Thieves",
+        team2="T1",
+        status="completed",
+        score="TBD –",
     )
     with patch("valorant_matches.scraping.client.MatchCache") as cache:
-        cache.return_value.get.return_value = asdict(stale)
+        cache.return_value.get.return_value = stale.to_dict()
         async with AsyncValorantClient() as client:
             with patch(
                 "aiohttp.ClientSession.get",
                 return_value=response_for("champions-tentative"),
             ) as get:
-                result = await client.process_match({"href": "/753444/champions"})
+                result = await client.process_match(CHAMPIONS_URL)
         get.assert_called_once()
-        cache.return_value.invalidate.assert_called_once_with(stale.url)
+        cache.return_value.invalidate.assert_called_once_with(CHAMPIONS_URL)
         cache.return_value.set.assert_not_called()
     assert result.match is not None
-    assert result.match.is_upcoming
-    assert result.match.start_time is None
+    assert result.match.status == "upcoming"
+    assert result.match.starts_at is None
     assert not result.cache_hit

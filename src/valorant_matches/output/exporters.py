@@ -3,97 +3,126 @@
 import csv
 import json
 import logging
+from datetime import UTC, tzinfo
 from pathlib import Path
+from typing import Any
 
 from valorant_matches.scraping.matches import Match
 
 logger = logging.getLogger("valorant_matches")
 
+EXPORT_FIELDS = [
+    "date_time",
+    "start_time",
+    "team1",
+    "team2",
+    "score",
+    "countdown",
+    "status",
+    "url",
+]
 
-def match_to_dict(match: Match) -> dict:
-    """Convert a Match object to a dictionary for export."""
-    status = match.status
 
+def match_to_dict(match: Match, zone: tzinfo | None = None) -> dict[str, Any]:
+    """Convert a match to export values.
+
+    Args:
+        match: Match to export.
+        zone: Timezone for the human-readable date_time; None means local.
+
+    Returns:
+        A dictionary keyed by EXPORT_FIELDS; start_time is ISO 8601 UTC.
+    """
+    date, time = match.local_date_time(zone)
     return {
-        "start_time": match.start_time,
-        "date_time": f"{match.date} {match.time}",
+        "date_time": f"{date} {time}",
+        "start_time": match.starts_at.astimezone(UTC).isoformat()
+        if match.starts_at
+        else None,
         "team1": match.team1,
         "team2": match.team2,
         "score": match.score,
-        "status": status,
+        "countdown": match.countdown,
+        "status": match.status,
         "url": match.url,
     }
 
 
-def export_json(results: list[tuple[dict, Match]], output_path: str | Path) -> int:
-    """Export match results to JSON file.
+def export_json(
+    matches: list[Match], output_path: str | Path, zone: tzinfo | None = None
+) -> int:
+    """Export matches to a JSON file.
 
     Args:
-        results: List of (link, Match) tuples
-        output_path: Path to output file
+        matches: Matches to export.
+        output_path: Path to output file.
+        zone: Timezone for date_time values.
 
     Returns:
-        Number of matches exported
+        Number of matches exported.
     """
-    matches = [match_to_dict(match) for _, match in results]
+    rows = [match_to_dict(match, zone) for match in matches]
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps({"matches": rows, "count": len(rows)}, indent=2), encoding="utf-8"
+    )
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump({"matches": matches, "count": len(matches)}, f, indent=2)
+    logger.info(f"Exported {len(rows)} matches to {output_path}")
+    return len(rows)
+
+
+def export_csv(
+    matches: list[Match], output_path: str | Path, zone: tzinfo | None = None
+) -> int:
+    """Export matches to a CSV file.
+
+    Args:
+        matches: Matches to export.
+        output_path: Path to output file.
+        zone: Timezone for date_time values.
+
+    Returns:
+        Number of matches exported.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=EXPORT_FIELDS)
+        writer.writeheader()
+        writer.writerows(match_to_dict(match, zone) for match in matches)
 
     logger.info(f"Exported {len(matches)} matches to {output_path}")
     return len(matches)
 
 
-def export_csv(results: list[tuple[dict, Match]], output_path: str | Path) -> int:
-    """Export match results to CSV file.
-
-    Args:
-        results: List of (link, Match) tuples
-        output_path: Path to output file
-
-    Returns:
-        Number of matches exported
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fieldnames = ["date_time", "start_time", "team1", "team2", "score", "status", "url"]
-
-    with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-
-        for _, match in results:
-            writer.writerow(match_to_dict(match))
-
-    logger.info(f"Exported {len(results)} matches to {output_path}")
-    return len(results)
-
-
 def export_matches(
-    results: list[tuple[dict, Match]],
+    matches: list[Match],
     export_format: str,
     output_path: str | Path | None = None,
+    zone: tzinfo | None = None,
 ) -> int:
-    """Export match results to specified format.
+    """Export matches in the requested format.
 
     Args:
-        results: List of (link, Match) tuples
-        export_format: Export format ('json' or 'csv')
-        output_path: Optional path to output file. If not provided, uses default.
+        matches: Matches to export.
+        export_format: "json" or "csv".
+        output_path: Output file; defaults to matches.<format>.
+        zone: Timezone for date_time values.
 
     Returns:
-        Number of matches exported
+        Number of matches exported.
+
+    Raises:
+        ValueError: For an unsupported format.
     """
     if output_path is None:
         output_path = f"matches.{export_format}"
 
     if export_format == "json":
-        return export_json(results, output_path)
-    elif export_format == "csv":
-        return export_csv(results, output_path)
-    else:
-        raise ValueError(f"Unsupported export format: {export_format}")
+        return export_json(matches, output_path, zone)
+    if export_format == "csv":
+        return export_csv(matches, output_path, zone)
+    raise ValueError(f"Unsupported export format: {export_format}")
