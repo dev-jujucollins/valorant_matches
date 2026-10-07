@@ -217,10 +217,8 @@ valorant_matches/
 │   ├── scraping/
 │   ├── test_cache.py
 │   ├── test_config.py
-│   ├── test_profile.py
-│   └── test_project_config.py
+│   └── test_profile.py
 ├── pyproject.toml              # Project metadata and dependencies
-├── requirements.txt            # Runtime dependency mirror
 └── .env.example                # Configuration template
 ```
 
