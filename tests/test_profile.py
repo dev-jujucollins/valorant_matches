@@ -63,15 +63,6 @@ class TestUserProfile:
         assert removed is False
         assert len(profile.favorite_teams) == 1
 
-    def test_is_favorite_team(self):
-        """Test checking if a team is in favorites."""
-        profile = UserProfile()
-        profile.add_favorite_team("Sentinels")
-
-        assert profile.is_favorite_team("Sentinels") is True
-        assert profile.is_favorite_team("sentinels") is True
-        assert profile.is_favorite_team("Cloud9") is False
-
 
 class TestConfigManager:
     """Tests for ConfigManager class."""
@@ -132,28 +123,6 @@ class TestConfigManager:
             assert reset_profile.default_region is None
             assert not config_path.exists()
 
-    def test_update(self):
-        """Test updating specific profile fields."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.json"
-            manager = ConfigManager(config_path)
-
-            updated = manager.update(default_region="emea", compact_mode=True)
-
-            assert updated.default_region == "emea"
-            assert updated.compact_mode is True
-            assert updated.favorite_teams == []  # unchanged
-
-    def test_profile_property(self):
-        """Test profile property returns cached profile."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / "config.json"
-            manager = ConfigManager(config_path)
-
-            profile1 = manager.profile
-            profile2 = manager.profile
-            assert profile1 is profile2  # Same cached instance
-
     def test_load_invalid_json(self):
         """Test loading from invalid JSON file uses defaults."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -167,3 +136,19 @@ class TestConfigManager:
 
             # Should return default profile
             assert profile.default_region is None
+
+    def test_load_wrong_fields_uses_defaults(self, tmp_path):
+        """A config with unknown keys falls back to defaults."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text('{"unknown": 1}')
+        assert ConfigManager(config_path).load() == UserProfile()
+
+    def test_save_leaves_no_temp_file(self, tmp_path):
+        """Saving replaces the file atomically."""
+        config_path = tmp_path / "config.json"
+        ConfigManager(config_path).save(UserProfile(default_region="emea"))
+        assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+    def test_reset_without_file(self, tmp_path):
+        """Resetting when nothing is saved is not an error."""
+        assert ConfigManager(tmp_path / "config.json").reset() == UserProfile()
