@@ -1,10 +1,9 @@
-# Caching module for match data with TTL support.
+# Two-tier (memory + disk) cache for completed match data.
 import hashlib
 import json
 import logging
 import math
 import tempfile
-import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -18,12 +17,15 @@ logger = logging.getLogger("valorant_matches")
 MEMORY_CACHE_SIZE = 100
 
 # Bump when the cached Match payload shape changes; mismatched entries are
-# discarded instead of raising TypeError on Match(**data).
+# discarded instead of failing to rebuild a Match.
 CACHE_SCHEMA_VERSION = 2
 
 
 class MatchCache:
-    """Two-tier cache with in-memory LRU and file-based persistence."""
+    """Two-tier cache with an in-memory LRU and file-based persistence.
+
+    The cache is used from a single asyncio thread, so it takes no locks.
+    """
 
     def __init__(
         self,
@@ -31,71 +33,68 @@ class MatchCache:
         ttl_seconds: int = CACHE_TTL_SECONDS,
         enabled: bool = CACHE_ENABLED,
         memory_size: int = MEMORY_CACHE_SIZE,
-    ):
+    ) -> None:
         self.cache_dir = cache_dir
         self.ttl_seconds = ttl_seconds
         self.enabled = enabled
         self._memory_size = memory_size
 
-        # Thread-safe in-memory LRU cache: {key: (timestamp, data)}
-        self._memory_cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
-        self._memory_lock = threading.Lock()
+        # In-memory LRU cache: {key: (timestamp, data)}, oldest first
+        self._memory_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = (
+            OrderedDict()
+        )
 
         if self.enabled:
-            self._ensure_cache_dir()
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _ensure_cache_dir(self) -> None:
-        """Create cache directory if it doesn't exist."""
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+    def _memory_get(self, key: str) -> dict[str, Any] | None:
+        """Get from memory, or None when missing or expired."""
+        entry = self._memory_cache.get(key)
+        if entry is None:
+            return None
+        timestamp, data = entry
+        if time.time() - timestamp > self.ttl_seconds:
+            del self._memory_cache[key]
+            return None
+        self._memory_cache.move_to_end(key)
+        return data
 
-    def _memory_get(self, key: str) -> Any | None:
-        """Get from memory cache (thread-safe). Returns None if not found or expired."""
-        with self._memory_lock:
-            if key not in self._memory_cache:
-                return None
-            timestamp, data = self._memory_cache[key]
-            if time.time() - timestamp > self.ttl_seconds:
-                del self._memory_cache[key]
-                return None
-            # Move to end for LRU behavior
+    def _memory_set(self, key: str, data: dict[str, Any]) -> None:
+        """Store in memory, evicting the least recently used entry when full."""
+        if key in self._memory_cache:
             self._memory_cache.move_to_end(key)
-            return data
-
-    def _memory_set(self, key: str, data: Any) -> None:
-        """Set in memory cache (thread-safe) with LRU eviction."""
-        with self._memory_lock:
-            # Remove oldest if at capacity
+        else:
             while len(self._memory_cache) >= self._memory_size:
                 self._memory_cache.popitem(last=False)
-            self._memory_cache[key] = (time.time(), data)
-
-    def _memory_delete(self, key: str) -> None:
-        """Delete from memory cache (thread-safe)."""
-        with self._memory_lock:
-            self._memory_cache.pop(key, None)
+        self._memory_cache[key] = (time.time(), data)
 
     def _get_cache_key(self, url: str) -> str:
-        """Generate a cache key from URL using SHA-256."""
+        """Generate a cache key from a URL using SHA-256."""
         return hashlib.sha256(url.encode()).hexdigest()
 
     def _get_cache_path(self, key: str) -> Path:
         """Get the file path for a cache key."""
         return self.cache_dir / f"{key}.json"
 
-    def get(self, url: str) -> Any | None:
-        """Get cached data for a URL. Checks memory first, then disk."""
+    def get(self, url: str) -> dict[str, Any] | None:
+        """Get cached data for a URL, checking memory before disk.
+
+        Args:
+            url: Match page URL.
+
+        Returns:
+            The cached data, or None on a miss, expiry, or damaged entry.
+        """
         if not self.enabled:
             return None
 
         key = self._get_cache_key(url)
 
-        # Check memory cache first (fast path)
         data = self._memory_get(key)
         if data is not None:
             logger.debug(f"Memory cache hit for {url}")
             return data
 
-        # Fall back to disk cache
         cache_path = self._get_cache_path(key)
         if not cache_path.exists():
             return None
@@ -111,7 +110,6 @@ class MatchCache:
                 cache_path.unlink(missing_ok=True)
                 return None
 
-            # Check if cache has expired
             timestamp = cached["timestamp"]
             if (
                 not isinstance(timestamp, (int, float))
@@ -124,29 +122,33 @@ class MatchCache:
                 cache_path.unlink(missing_ok=True)
                 return None
 
-            # Promote to memory cache for faster subsequent access
-            if not isinstance(cached["data"], dict):
+            data = cached["data"]
+            if not isinstance(data, dict):
                 raise ValueError("cache data must be an object")
-            self._memory_set(key, cached["data"])
+            # Promote to memory cache for faster subsequent access
+            self._memory_set(key, data)
             logger.debug(f"Disk cache hit for {url}")
-            return cached["data"]
+            return data
 
         except (json.JSONDecodeError, KeyError, OSError, ValueError) as e:
             logger.warning(f"Failed to read cache for {url}: {e}")
             cache_path.unlink(missing_ok=True)
             return None
 
-    def set(self, url: str, data: Any) -> None:
-        """Cache data for a URL in both memory and disk."""
+    def set(self, url: str, data: dict[str, Any]) -> None:
+        """Cache data for a URL in memory and, atomically, on disk.
+
+        Args:
+            url: Match page URL.
+            data: JSON-serializable match data.
+        """
         if not self.enabled:
             return
 
         key = self._get_cache_key(url)
-
-        # Store in memory cache (fast access)
         self._memory_set(key, data)
 
-        # Persist to disk atomically (write to temp file, then rename)
+        # Write to a temp file, then rename, so readers never see partial JSON.
         cache_path = self._get_cache_path(key)
         try:
             cache_entry = {
@@ -169,108 +171,50 @@ class MatchCache:
             logger.warning(f"Failed to write cache for {url}: {e}")
 
     def invalidate(self, url: str) -> bool:
-        """Invalidate (remove) cached data for a URL. Returns True if entry was removed."""
+        """Remove cached data for a URL.
+
+        Args:
+            url: Match page URL.
+
+        Returns:
+            True when a disk entry was removed.
+        """
         if not self.enabled:
             return False
 
         key = self._get_cache_key(url)
+        self._memory_cache.pop(key, None)
 
-        # Remove from memory cache
-        self._memory_delete(key)
-
-        # Remove from disk
         cache_path = self._get_cache_path(key)
-        if cache_path.exists():
-            try:
-                cache_path.unlink()
-                logger.debug(f"Invalidated cache for {url}")
-                return True
-            except OSError as e:
-                logger.warning(f"Failed to invalidate cache for {url}: {e}")
-                return False
-        return False
+        if not cache_path.exists():
+            return False
+        try:
+            cache_path.unlink()
+        except OSError as e:
+            logger.warning(f"Failed to invalidate cache for {url}: {e}")
+            return False
+        logger.debug(f"Invalidated cache for {url}")
+        return True
 
     def clear(self) -> int:
-        """Clear all cached data (memory and disk). Returns number of entries cleared."""
-        # Clear memory cache
-        with self._memory_lock:
-            memory_count = len(self._memory_cache)
-            self._memory_cache.clear()
+        """Clear all cached data in memory and on disk.
+
+        Returns:
+            Number of disk entries removed.
+        """
+        memory_count = len(self._memory_cache)
+        self._memory_cache.clear()
 
         if not self.cache_dir.exists():
-            return memory_count
+            return 0
 
         disk_count = 0
         for cache_file in self.cache_dir.glob("*.json"):
             try:
                 cache_file.unlink()
                 disk_count += 1
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning(f"Failed to remove cache file {cache_file}: {e}")
 
         logger.info(f"Cleared {disk_count} disk / {memory_count} memory cache entries")
         return disk_count
-
-    def clear_expired(self) -> int:
-        """Clear only expired cache entries. Returns number of entries cleared."""
-        if not self.cache_dir.exists():
-            return 0
-
-        count = 0
-        current_time = time.time()
-
-        for cache_file in self.cache_dir.glob("*.json"):
-            try:
-                with open(cache_file, encoding="utf-8") as f:
-                    cached = json.load(f)
-
-                if current_time - cached["timestamp"] > self.ttl_seconds:
-                    cache_file.unlink()
-                    count += 1
-
-            except (json.JSONDecodeError, KeyError, OSError):
-                cache_file.unlink(missing_ok=True)
-                count += 1
-
-        if count > 0:
-            logger.info(f"Cleared {count} expired cache entries")
-        return count
-
-    def get_stats(self) -> dict:
-        """Get cache statistics (memory and disk)."""
-        # Memory cache stats
-        with self._memory_lock:
-            memory_entries = len(self._memory_cache)
-
-        if not self.cache_dir.exists():
-            return {
-                "memory_entries": memory_entries,
-                "disk_total": 0,
-                "disk_valid": 0,
-                "disk_expired": 0,
-            }
-
-        disk_total = 0
-        disk_valid = 0
-        disk_expired = 0
-        current_time = time.time()
-
-        for cache_file in self.cache_dir.glob("*.json"):
-            disk_total += 1
-            try:
-                with open(cache_file, encoding="utf-8") as f:
-                    cached = json.load(f)
-
-                if current_time - cached["timestamp"] > self.ttl_seconds:
-                    disk_expired += 1
-                else:
-                    disk_valid += 1
-            except (json.JSONDecodeError, KeyError, OSError):
-                disk_expired += 1
-
-        return {
-            "memory_entries": memory_entries,
-            "disk_total": disk_total,
-            "disk_valid": disk_valid,
-            "disk_expired": disk_expired,
-        }

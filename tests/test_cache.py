@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from valorant_matches.cache import MatchCache
+from valorant_matches.cache import CACHE_SCHEMA_VERSION, MatchCache
 
 
 @pytest.fixture
@@ -32,8 +32,8 @@ class TestMatchCache:
         "entry",
         [
             [],
-            {"version": 2, "timestamp": "bad", "data": {}},
-            {"version": 2, "timestamp": time.time(), "data": []},
+            {"version": CACHE_SCHEMA_VERSION, "timestamp": "bad", "data": {}},
+            {"version": CACHE_SCHEMA_VERSION, "timestamp": time.time(), "data": []},
         ],
     )
     def test_malformed_record_is_discarded(
@@ -102,38 +102,6 @@ class TestMatchCache:
         for url in urls:
             assert cache.get(url) is None
 
-    def test_cache_clear_expired(self, temp_cache_dir):
-        """Test clearing only expired cache entries."""
-        cache = MatchCache(cache_dir=temp_cache_dir, ttl_seconds=1, enabled=True)
-
-        # Set one entry that will expire
-        cache.set("https://vlr.gg/match/old", {"old": True})
-
-        # Wait for it to expire
-        time.sleep(1.1)
-
-        # Set another entry that won't expire
-        cache.set("https://vlr.gg/match/new", {"new": True})
-
-        count = cache.clear_expired()
-
-        assert count == 1
-        assert cache.get("https://vlr.gg/match/old") is None
-        assert cache.get("https://vlr.gg/match/new") == {"new": True}
-
-    def test_cache_stats(self, cache, temp_cache_dir):
-        """Test getting cache statistics."""
-        cache.set("https://vlr.gg/match/1", {"data": 1})
-        cache.set("https://vlr.gg/match/2", {"data": 2})
-
-        stats = cache.get_stats()
-
-        # Updated for two-tier cache stats
-        assert stats["disk_total"] == 2
-        assert stats["disk_valid"] == 2
-        assert stats["disk_expired"] == 0
-        assert stats["memory_entries"] == 2  # Both entries are also in memory
-
     def test_cache_handles_invalid_json(self, cache, temp_cache_dir):
         """Test that cache handles corrupted cache files gracefully."""
         url = "https://vlr.gg/match/12345"
@@ -191,3 +159,37 @@ class TestMatchCache:
         assert cache.get(url) is None
         # Stale file should be deleted
         assert not cache_path.exists()
+
+
+class TestMemoryLru:
+    """Tests for the in-memory LRU tier."""
+
+    def test_updating_key_at_capacity_keeps_other_entries(self, temp_cache_dir):
+        """Overwriting a cached URL must not evict an unrelated entry."""
+        cache = MatchCache(cache_dir=temp_cache_dir, enabled=True, memory_size=2)
+        cache.set("https://vlr.gg/1", {"n": 1})
+        cache.set("https://vlr.gg/2", {"n": 2})
+        cache.set("https://vlr.gg/1", {"n": 11})
+        keys = list(cache._memory_cache)
+        assert keys == [
+            cache._get_cache_key("https://vlr.gg/2"),
+            cache._get_cache_key("https://vlr.gg/1"),
+        ]
+
+    def test_least_recently_used_is_evicted(self, temp_cache_dir):
+        """Reading an entry protects it from the next eviction."""
+        cache = MatchCache(cache_dir=temp_cache_dir, enabled=True, memory_size=2)
+        cache.set("https://vlr.gg/1", {"n": 1})
+        cache.set("https://vlr.gg/2", {"n": 2})
+        cache.get("https://vlr.gg/1")
+        cache.set("https://vlr.gg/3", {"n": 3})
+        assert cache._get_cache_key("https://vlr.gg/2") not in cache._memory_cache
+        assert cache._get_cache_key("https://vlr.gg/1") in cache._memory_cache
+
+    def test_disk_hit_survives_new_instance(self, temp_cache_dir):
+        """A new process reads entries written by an earlier one."""
+        MatchCache(cache_dir=temp_cache_dir, enabled=True).set(
+            "https://vlr.gg/1", {"n": 1}
+        )
+        fresh = MatchCache(cache_dir=temp_cache_dir, enabled=True)
+        assert fresh.get("https://vlr.gg/1") == {"n": 1}
