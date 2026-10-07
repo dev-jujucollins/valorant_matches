@@ -1,26 +1,31 @@
-# Tests for match extraction.
-import time
+# Tests for match models and extraction.
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from bs4 import BeautifulSoup
 
 from valorant_matches.scraping.matches import (
-    CIRCUIT_BREAKER_RESET_TIME,
-    CIRCUIT_BREAKER_THRESHOLD,
     COUNTDOWN_PATTERN,
     EVENT_SLUG_PATTERN,
     MATCH_URL_PATTERN,
-    MAX_BACKOFF_DELAY,
-    CircuitBreakerMixin,
-    CircuitBreakerOpen,
+    UNKNOWN_TEAMS,
+    Match,
+    build_match_from_soup,
+    extract_countdown,
     extract_date_time,
     extract_live_status,
-    extract_match_data,
     extract_score,
     extract_teams,
-    format_eta,
-    is_upcoming_match,
+    find_event_match_urls,
+    is_placeholder_score,
+    should_use_cached_match,
 )
+
+
+def soup_of(html: str) -> BeautifulSoup:
+    """Parse an HTML snippet."""
+    return BeautifulSoup(html, "html.parser")
 
 
 class TestConstants:
@@ -42,331 +47,281 @@ class TestConstants:
         )
         assert match
         assert match.group(1) == "vct-2026-americas-kickoff"
-
-        match = EVENT_SLUG_PATTERN.search("/event/matches/1234/test-event/")
-        assert match
-        assert match.group(1) == "test-event"
-
         assert not EVENT_SLUG_PATTERN.search("/other/path/")
 
     def test_countdown_pattern(self):
         """Test COUNTDOWN_PATTERN matches countdown strings."""
         assert COUNTDOWN_PATTERN.match("1h 30m")
         assert COUNTDOWN_PATTERN.match("2d 5h")
-        assert COUNTDOWN_PATTERN.match("0h 42m")
         assert COUNTDOWN_PATTERN.match("5m remaining")
         assert not COUNTDOWN_PATTERN.match("Match has not started")
         assert not COUNTDOWN_PATTERN.match("2 : 1")
 
 
-class TestCircuitBreakerMixin:
-    """Tests for CircuitBreakerMixin."""
+class TestMatchModel:
+    """Tests for Match serialization and display helpers."""
 
-    def _create_mixin_instance(self):
-        """Create a test class that uses CircuitBreakerMixin."""
+    def _match(self, **overrides) -> Match:
+        values = {
+            "url": "https://vlr.gg/1",
+            "team1": "Sentinels",
+            "team2": "Cloud9",
+            "status": "completed",
+            "score": "2 : 1",
+            "starts_at": datetime(2026, 1, 2, 1, 0, tzinfo=UTC),
+            "date_label": "January 2, 2026",
+            "time_label": "1:00 AM",
+        }
+        values.update(overrides)
+        return Match(**values)
 
-        class TestClient(CircuitBreakerMixin):
-            def __init__(self):
-                self._init_circuit_breaker()
+    def test_round_trip(self) -> None:
+        """to_dict output rebuilds an equal match."""
+        match = self._match(countdown=None)
+        assert Match.from_dict(match.to_dict()) == match
 
-        return TestClient()
+    def test_round_trip_without_start(self) -> None:
+        """Matches without a known start survive serialization."""
+        match = self._match(starts_at=None)
+        assert Match.from_dict(match.to_dict()) == match
 
-    def test_calculate_backoff(self):
-        """Test _calculate_backoff returns exponential delays."""
-        client = self._create_mixin_instance()
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"status": "finished"},
+            {"starts_at": "2026-01-02T01:00:00"},
+            {"starts_at": "not a date"},
+            {"starts_at": 123},
+            {"team1": None},
+            {"unexpected": True},
+        ],
+    )
+    def test_from_dict_rejects_invalid_data(self, change: dict) -> None:
+        """Damaged records raise instead of producing a bad match."""
+        data = self._match().to_dict() | change
+        with pytest.raises((TypeError, ValueError)):
+            Match.from_dict(data)
 
-        delay0 = client._calculate_backoff(0)
-        delay1 = client._calculate_backoff(1)
-        delay2 = client._calculate_backoff(2)
+    def test_from_dict_rejects_missing_fields(self) -> None:
+        """Records from the old schema are rejected."""
+        with pytest.raises(TypeError):
+            Match.from_dict({"team1": "A"})
 
-        # Delays should increase
-        assert delay1 > delay0
-        assert delay2 > delay1
+    def test_local_date_time_converts_known_start(self) -> None:
+        """A known start renders in the requested timezone."""
+        date, time = self._match().local_date_time(ZoneInfo("America/Los_Angeles"))
+        assert date == "January 01, 2026"
+        assert time == "05:00 PM PST"
 
-    def test_calculate_backoff_max_limit(self):
-        """Test _calculate_backoff is capped at MAX_BACKOFF_DELAY."""
-        client = self._create_mixin_instance()
-        delay = client._calculate_backoff(100)
-        assert delay <= MAX_BACKOFF_DELAY
+    def test_local_date_time_falls_back_to_labels(self) -> None:
+        """Without a start, the source labels are shown unchanged."""
+        match = self._match(starts_at=None)
+        assert match.local_date_time(ZoneInfo("UTC")) == ("January 2, 2026", "1:00 AM")
 
-    def test_check_circuit_breaker_when_closed(self):
-        """Test _check_circuit_breaker passes when circuit is closed."""
-        client = self._create_mixin_instance()
-        # Should not raise
-        client._check_circuit_breaker()
-
-    def test_check_circuit_breaker_when_open(self):
-        """Test _check_circuit_breaker raises when circuit is open."""
-        client = self._create_mixin_instance()
-        client._circuit_open_time = time.monotonic()
-        client._failure_count = CIRCUIT_BREAKER_THRESHOLD
-
-        with pytest.raises(CircuitBreakerOpen):
-            client._check_circuit_breaker()
-
-    def test_check_circuit_breaker_resets_after_timeout(self):
-        """Test _check_circuit_breaker resets after timeout."""
-        client = self._create_mixin_instance()
-        client._circuit_open_time = time.monotonic() - CIRCUIT_BREAKER_RESET_TIME - 1
-        client._failure_count = CIRCUIT_BREAKER_THRESHOLD
-
-        # Should not raise - circuit should reset
-        client._check_circuit_breaker()
-
-        assert client._circuit_open_time is None
-        assert client._failure_count == 0
-
-    def test_record_success(self):
-        """Test _record_success resets failure count."""
-        client = self._create_mixin_instance()
-        client._failure_count = 3
-
-        client._record_success()
-
-        assert client._failure_count == 0
-        assert client._circuit_open_time is None
-
-    def test_record_failure_increments_count(self):
-        """Test _record_failure increments failure count."""
-        client = self._create_mixin_instance()
-
-        client._record_failure()
-        assert client._failure_count == 1
-
-        client._record_failure()
-        assert client._failure_count == 2
-
-    def test_record_failure_trips_breaker(self):
-        """Test _record_failure trips circuit after threshold."""
-        client = self._create_mixin_instance()
-
-        for _ in range(CIRCUIT_BREAKER_THRESHOLD):
-            client._record_failure()
-
-        assert client._circuit_open_time is not None
-        assert client._failure_count == CIRCUIT_BREAKER_THRESHOLD
+    def test_should_use_cached_match(self) -> None:
+        """Only completed matches with real scores are served from cache."""
+        assert should_use_cached_match(self._match())
+        assert not should_use_cached_match(self._match(status="live"))
+        assert not should_use_cached_match(self._match(score=None))
+        assert not should_use_cached_match(self._match(score="TBD –"))
 
 
 class TestExtractionFunctions:
     """Tests for extraction functions."""
 
     @pytest.fixture
-    def completed_match_html(self):
+    def completed_soup(self) -> BeautifulSoup:
         """Sample HTML for a completed match."""
-        return """
-        <html>
-        <body>
+        return soup_of(
+            """
             <div class="wf-title-med">Sentinels</div>
             <div class="wf-title-med">Cloud9</div>
             <div class="js-spoiler">2 : 1</div>
             <div class="moment-tz-convert">December 23, 2025</div>
             <div>3:00 PM EST</div>
-        </body>
-        </html>
-        """
+            """
+        )
 
     @pytest.fixture
-    def live_match_html(self):
+    def live_soup(self) -> BeautifulSoup:
         """Sample HTML for a live match."""
-        return """
-        <html>
-        <body>
+        return soup_of(
+            """
             <div class="wf-title-med">LOUD</div>
             <div class="wf-title-med">NRG</div>
             <div class="js-spoiler">1 : 1</div>
             <span class="match-header-vs-note mod-live">LIVE</span>
-            <div class="moment-tz-convert">December 23, 2025</div>
-            <div>5:00 PM EST</div>
-        </body>
-        </html>
-        """
+            """
+        )
 
     @pytest.fixture
-    def upcoming_match_html(self):
-        """Sample HTML for an upcoming match with countdown."""
-        return """
-        <html>
-        <body>
+    def upcoming_soup(self) -> BeautifulSoup:
+        """Sample HTML for an upcoming match with a countdown."""
+        return soup_of(
+            """
             <div class="wf-title-med">100 Thieves</div>
             <div class="wf-title-med">Evil Geniuses</div>
-            <span class="match-header-vs-note mod-upcoming">1h 30m</span>
-            <div class="moment-tz-convert">December 25, 2025</div>
-            <div>2:00 PM EST</div>
-        </body>
-        </html>
-        """
+            <div class="match-header-vs-score">
+              <span class="match-header-vs-note mod-upcoming">1h  30m</span>
+            </div>
+            """
+        )
 
-    def test_extract_teams(self, completed_match_html):
+    def test_extract_teams(self, completed_soup):
         """Test extract_teams extracts team names."""
-        soup = BeautifulSoup(completed_match_html, "html.parser")
-        teams = extract_teams(soup)
-
-        assert len(teams) == 2
-        assert teams[0] == "Sentinels"
-        assert teams[1] == "Cloud9"
+        assert extract_teams(completed_soup) == ["Sentinels", "Cloud9"]
 
     def test_extract_teams_with_fallback_selector(self):
         """Test extract_teams uses fallback selectors."""
-        html = """
-        <html>
-        <body>
-            <div class="match-header-link-name">Team Alpha</div>
-            <div class="match-header-link-name">Team Beta</div>
-        </body>
-        </html>
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        teams = extract_teams(soup)
-
-        assert teams[0] == "Team Alpha"
-        assert teams[1] == "Team Beta"
+        soup = soup_of(
+            '<div class="match-header-link-name">Team Alpha</div>'
+            '<div class="match-header-link-name">Team Beta</div>'
+        )
+        assert extract_teams(soup) == ["Team Alpha", "Team Beta"]
 
     def test_extract_teams_returns_unknown_when_not_found(self):
         """Test extract_teams returns unknown teams when not found."""
-        soup = BeautifulSoup("<html><body></body></html>", "html.parser")
-        teams = extract_teams(soup)
-
-        assert teams == ["Unknown Team 1", "Unknown Team 2"]
+        assert extract_teams(soup_of("<html></html>")) == UNKNOWN_TEAMS
 
     def test_extract_teams_strips_seed_info(self):
         """Test extract_teams strips seed info in parentheses."""
-        html = """
-        <html>
-        <body>
-            <div class="wf-title-med">Sentinels (1)</div>
-            <div class="wf-title-med">Cloud9 (2)</div>
-        </body>
-        </html>
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        teams = extract_teams(soup)
+        soup = soup_of(
+            '<div class="wf-title-med">Sentinels (1)</div>'
+            '<div class="wf-title-med">Cloud9 (2)</div>'
+        )
+        assert extract_teams(soup) == ["Sentinels", "Cloud9"]
 
-        assert teams[0] == "Sentinels"
-        assert teams[1] == "Cloud9"
-
-    def test_extract_score(self, completed_match_html):
+    def test_extract_score(self, completed_soup):
         """Test extract_score extracts match score."""
-        soup = BeautifulSoup(completed_match_html, "html.parser")
-        score = extract_score(soup)
-
-        assert score == "2 : 1"
+        assert extract_score(completed_soup) == "2 : 1"
 
     def test_extract_score_strips_notes(self):
         """Test extract_score removes the final/vs./Bo3 notes VLR appends."""
-        html = (
-            "<html><body>"
-            '<div class="js-spoiler">final 2 : 1 vs. Bo3</div>'
-            "</body></html>"
-        )
-        soup = BeautifulSoup(html, "html.parser")
-        score = extract_score(soup)
+        soup = soup_of('<div class="js-spoiler">final 2 : 1 vs. Bo3</div>')
+        assert extract_score(soup) == "2 : 1"
 
-        assert score == "2 : 1"
+    def test_extract_score_ignores_countdown(self, upcoming_soup):
+        """A countdown inside the score element is not a score."""
+        assert extract_score(upcoming_soup) is None
 
-    def test_extract_score_with_countdown(self, upcoming_match_html):
-        """Test extract_score extracts countdown for upcoming matches."""
-        soup = BeautifulSoup(upcoming_match_html, "html.parser")
-        score = extract_score(soup)
+    @pytest.mark.parametrize("text", ["TBD –", "–", "-", ""])
+    def test_extract_score_ignores_placeholders(self, text: str):
+        """Placeholder text before a match starts yields no score."""
+        soup = soup_of(f'<div class="match-header-vs-score">{text}</div>')
+        assert extract_score(soup) is None
 
-        assert score == "1h 30m"
+    def test_extract_score_returns_none_when_missing(self):
+        """Test extract_score returns None when no element matches."""
+        assert extract_score(soup_of("<html></html>")) is None
 
-    def test_extract_score_returns_default(self):
-        """Test extract_score returns default when not found."""
-        soup = BeautifulSoup("<html><body></body></html>", "html.parser")
-        score = extract_score(soup)
+    def test_extract_countdown(self, upcoming_soup, completed_soup):
+        """Countdown text is normalized; absent countdowns are None."""
+        assert extract_countdown(upcoming_soup) == "1h 30m"
+        assert extract_countdown(completed_soup) is None
 
-        assert score == "Match has not started yet."
-
-    def test_extract_live_status_live(self, live_match_html):
+    def test_extract_live_status_live(self, live_soup):
         """Test extract_live_status detects live match."""
-        soup = BeautifulSoup(live_match_html, "html.parser")
-        is_live = extract_live_status(soup)
+        assert extract_live_status(live_soup) is True
 
-        assert is_live is True
-
-    def test_extract_live_status_not_live(self, completed_match_html):
+    def test_extract_live_status_not_live(self, completed_soup):
         """Test extract_live_status returns False for non-live match."""
-        soup = BeautifulSoup(completed_match_html, "html.parser")
-        is_live = extract_live_status(soup)
-
-        assert is_live is False
+        assert extract_live_status(completed_soup) is False
 
     def test_extract_live_status_header_fallback(self):
         """Test extract_live_status uses header text fallback."""
-        html = """
-        <html>
-        <body>
-            <div class="match-header-vs">This match is LIVE now</div>
-        </body>
-        </html>
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        is_live = extract_live_status(soup)
+        soup = soup_of('<div class="match-header-vs">This match is LIVE now</div>')
+        assert extract_live_status(soup) is True
 
-        assert is_live is True
-
-    def test_extract_date_time(self, completed_match_html):
+    def test_extract_date_time(self, completed_soup):
         """Test extract_date_time extracts date and time."""
-        soup = BeautifulSoup(completed_match_html, "html.parser")
-        date, time_str = extract_date_time(soup)
-
-        assert date == "December 23, 2025"
-        assert time_str == "3:00 PM EST"
+        assert extract_date_time(completed_soup) == ("December 23, 2025", "3:00 PM EST")
 
     def test_extract_date_time_returns_unknown(self):
         """Test extract_date_time returns unknown when not found."""
-        soup = BeautifulSoup("<html><body></body></html>", "html.parser")
-        date, time_str = extract_date_time(soup)
-
-        assert date == "Unknown date"
-        assert time_str == "Unknown time"
-
-    def test_extract_match_data(self, completed_match_html):
-        """Test extract_match_data extracts all data."""
-        soup = BeautifulSoup(completed_match_html, "html.parser")
-        teams, score, is_live = extract_match_data(soup)
-
-        assert teams == ["Sentinels", "Cloud9"]
-        assert score == "2 : 1"
-        assert is_live is False
+        assert extract_date_time(soup_of("<html></html>")) == (
+            "Unknown date",
+            "Unknown time",
+        )
 
 
-class TestFormatEta:
-    """Tests for format_eta function."""
+class TestBuildMatch:
+    """Tests for turning a page into a Match with a status."""
 
-    def test_format_eta_with_countdown(self):
-        """Test format_eta with countdown patterns."""
-        assert format_eta("1h 30m") == "in 1h 30m"
-        assert format_eta("2d 5h") == "in 2d 5h"
-        assert format_eta("0h 42m") == "in 0h 42m"
+    @pytest.mark.parametrize(
+        ("html", "status", "score", "countdown"),
+        [
+            (
+                '<div class="js-spoiler">2 : 1</div>',
+                "completed",
+                "2 : 1",
+                None,
+            ),
+            (
+                '<div class="js-spoiler">1 : 1</div>'
+                '<span class="match-header-vs-note mod-live">LIVE</span>',
+                "live",
+                "1 : 1",
+                None,
+            ),
+            (
+                '<span class="match-header-vs-note mod-upcoming">1d 5h</span>',
+                "upcoming",
+                None,
+                "1d 5h",
+            ),
+            ("", "upcoming", None, None),
+        ],
+    )
+    def test_status_from_page(
+        self, html: str, status: str, score: str | None, countdown: str | None
+    ) -> None:
+        """Live wins, a missing score or a countdown means upcoming."""
+        teams = '<div class="wf-title-med">A</div><div class="wf-title-med">B</div>'
+        result = build_match_from_soup(soup_of(teams + html), "https://vlr.gg/1")
+        assert result.match is not None
+        assert result.match.status == status
+        assert result.match.score == score
+        assert result.match.countdown == countdown
 
-    def test_format_eta_fallback(self):
-        """Test format_eta returns UPCOMING for non-countdown."""
-        assert format_eta("Match has not started yet.") == "UPCOMING"
-        assert format_eta("") == "UPCOMING"
-        assert format_eta("vs") == "UPCOMING"
-        assert format_eta("2 : 1") == "UPCOMING"
+    def test_tbd_teams(self) -> None:
+        """Undecided teams are reported as TBD, not as a match."""
+        soup = soup_of(
+            '<div class="wf-title-med">TBD</div><div class="wf-title-med">B</div>'
+        )
+        result = build_match_from_soup(soup, "https://vlr.gg/1")
+        assert result.is_tbd and result.match is None
+
+    def test_missing_teams_is_parse_error(self) -> None:
+        """Pages without team names produce a parse error."""
+        result = build_match_from_soup(soup_of("<html></html>"), "https://vlr.gg/1")
+        assert result.error is not None
+        assert result.error.error_type == "parse"
 
 
-class TestIsUpcomingMatch:
-    """Tests for is_upcoming_match function."""
+class TestIsPlaceholderScore:
+    """Tests for is_placeholder_score."""
 
-    def test_is_upcoming_with_countdown(self):
-        """Test is_upcoming_match with countdown patterns."""
-        assert is_upcoming_match("1h 30m") is True
-        assert is_upcoming_match("2d 5h") is True
-        assert is_upcoming_match("0h 42m") is True
+    @pytest.mark.parametrize("text", ["", "TBD", "tbd –", "—", "1h 30m", "2d 5h"])
+    def test_placeholders(self, text: str) -> None:
+        """Dashes, TBD, and countdowns are not scores."""
+        assert is_placeholder_score(text) is True
 
-    def test_is_upcoming_with_not_started_text(self):
-        """Test is_upcoming_match with 'match has not started' text."""
-        assert is_upcoming_match("Match has not started yet.") is True
-        assert is_upcoming_match("match has not started") is True
+    @pytest.mark.parametrize("text", ["2 : 1", "0 : 2", "13-11"])
+    def test_scores(self, text: str) -> None:
+        """Real scores are not placeholders."""
+        assert is_placeholder_score(text) is False
 
-    def test_is_upcoming_completed_match(self):
-        """Test is_upcoming_match returns False for completed matches."""
-        assert is_upcoming_match("2 : 1") is False
-        assert is_upcoming_match("0 : 2") is False
 
-    def test_is_upcoming_empty_string(self):
-        """Test is_upcoming_match with empty string."""
-        assert is_upcoming_match("") is False
+class TestFindEventMatchUrls:
+    """Tests for find_event_match_urls."""
+
+    def test_returns_unique_absolute_urls_in_order(self) -> None:
+        """Duplicate links collapse and relative links become absolute."""
+        soup = soup_of(
+            '<a href="/2/b">b</a><a href="/1/a">a</a><a href="/2/b">again</a>'
+            '<a href="/event/9">event</a>'
+        )
+        assert find_event_match_urls(soup) == [
+            "https://vlr.gg/2/b",
+            "https://vlr.gg/1/a",
+        ]

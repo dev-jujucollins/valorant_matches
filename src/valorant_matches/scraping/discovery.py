@@ -10,25 +10,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
-import requests
 from bs4 import BeautifulSoup
-from cachetools import TTLCache
-from requests.adapters import HTTPAdapter
-from requests.exceptions import (
-    ConnectionError,
-    HTTPError,
-    RequestException,
-    Timeout,
-)
 
-from valorant_matches.config import (
-    APP_DIR,
-    BASE_URL,
-    HEADERS,
-    MAX_RETRIES,
-    REQUEST_TIMEOUT,
-    RETRY_DELAY,
-)
+from valorant_matches.config import APP_DIR, BASE_URL
+from valorant_matches.scraping.http import fetch_page
 
 logger = logging.getLogger("valorant_matches")
 
@@ -47,6 +32,16 @@ REGION_ALIASES: dict[str, list[str]] = {
     "champions": ["champions"],
     "masters": ["masters"],
 }
+
+
+def canonical_region(name: str) -> str | None:
+    """Map a region name or alias to its canonical region, if known."""
+    name = name.lower()
+    return next(
+        (region for region, aliases in REGION_ALIASES.items() if name in aliases),
+        None,
+    )
+
 
 # Pre-compiled regex patterns for performance
 VCT_SLUG_PATTERN = re.compile(r"vct-(\d{4})-([^-]+)-(.+)")
@@ -85,19 +80,9 @@ class EventDiscovery:
         self.snapshot_path = snapshot_dir / f"events-{self.season}.json"
         self.is_stale = False
         self.last_updated: float | None = None
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
-
-        # Configure connection pooling for better performance
-        adapter = HTTPAdapter(
-            pool_connections=5,
-            pool_maxsize=10,
-            max_retries=0,  # We handle retries ourselves
-        )
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-
-        self._cache: TTLCache = TTLCache(maxsize=10, ttl=EVENT_CACHE_TTL)
+        # In-process copy of the last successful discovery and when it ran.
+        self._events: list[DiscoveredEvent] | None = None
+        self._events_fetched_at = 0.0
 
     def _load_snapshot(self) -> list[DiscoveredEvent]:
         """Load last successful discovery for this season."""
@@ -160,43 +145,21 @@ class EventDiscovery:
             if "temp_path" in locals():
                 temp_path.unlink(missing_ok=True)
 
-    def _is_retryable_error(
-        self, error: Exception, response: requests.Response | None = None
-    ) -> bool:
-        """Determine if an error is transient and worth retrying."""
-        if isinstance(error, (ConnectionError, Timeout)):
-            return True
-        if isinstance(error, HTTPError) and response is not None:
-            return response.status_code >= 500 or response.status_code == 429
-        return False
+    def _fetch(self, url: str) -> BeautifulSoup | None:
+        """Fetch a page with the shared retry and circuit-breaker policy."""
+        return fetch_page(url)
 
-    def _make_request(self, url: str) -> BeautifulSoup | None:
-        """Make an HTTP request with smart retry logic."""
-        for attempt in range(MAX_RETRIES):
-            response = None
-            try:
-                response = self.session.get(url, timeout=REQUEST_TIMEOUT)
-                response.raise_for_status()
-                return BeautifulSoup(response.text, "lxml")
-            except RequestException as e:
-                is_retryable = self._is_retryable_error(e, response)
-
-                if is_retryable and attempt < MAX_RETRIES - 1:
-                    logger.warning(
-                        f"Transient error (attempt {attempt + 1}/{MAX_RETRIES}): {e}"
-                    )
-                    time.sleep(RETRY_DELAY * (2**attempt))
-                elif not is_retryable:
-                    logger.warning(f"Permanent error, not retrying: {e}")
-                    return None
-                else:
-                    logger.error(f"Failed after {MAX_RETRIES} attempts: {e}")
-                    return None
-        return None
+    def _fresh_events(self) -> list[DiscoveredEvent] | None:
+        """Return the in-process event list while it is younger than the TTL."""
+        if self._events is None:
+            return None
+        if time.monotonic() - self._events_fetched_at > EVENT_CACHE_TTL:
+            return None
+        return self._events
 
     def can_reach_vlr(self) -> bool:
         """Check if vlr.gg is reachable using normal discovery request settings."""
-        return self._make_request(BASE_URL) is not None
+        return self._fetch(BASE_URL) is not None
 
     def _slug_to_name(self, slug: str) -> str | None:
         """Convert event slug to human-readable name."""
@@ -255,23 +218,21 @@ class EventDiscovery:
 
     def discover_events(self, force_refresh: bool = False) -> list[DiscoveredEvent]:
         """Discover current VCT events from vlr.gg."""
-        cache_key = "vct_events"
-
-        # Check cache (TTLCache auto-expires entries)
-        if not force_refresh and cache_key in self._cache:
+        cached = None if force_refresh else self._fresh_events()
+        if cached is not None:
             logger.debug("Using cached event list")
-            return self._cache[cache_key]
+            return cached
 
         logger.info("Discovering VCT events from vlr.gg")
         events = []
 
         # Fetch VCT events page
-        soup = self._make_request(VCT_EVENTS_URL)
+        soup = self._fetch(VCT_EVENTS_URL)
         if not soup:
             logger.warning("Failed to fetch events page, using saved discovery")
-            if cache_key in self._cache:
+            if self._events is not None:
                 self.is_stale = True
-                return self._cache[cache_key]
+                return self._events
             saved = self._load_snapshot()
             self.is_stale = bool(saved)
             return saved
@@ -290,7 +251,7 @@ class EventDiscovery:
                 ]
                 if any(year < self.season for year in years):
                     break
-                older_page = self._make_request(f"{VCT_EVENTS_URL}&page={page}")
+                older_page = self._fetch(f"{VCT_EVENTS_URL}&page={page}")
                 if not older_page:
                     break
                 more_links = older_page.find_all("a", href=EVENT_LINK_PATTERN)
@@ -369,12 +330,12 @@ class EventDiscovery:
         # Sort by event_id (roughly chronological)
         events.sort(key=lambda e: int(e.event_id))
 
-        # Cache results (TTLCache handles expiration automatically)
         if not events:
             saved = self._load_snapshot()
             self.is_stale = bool(saved)
             return saved
-        self._cache[cache_key] = events
+        self._events = events
+        self._events_fetched_at = time.monotonic()
         self.is_stale = False
         self.last_updated = time.time()
         self._save_snapshot(events)
@@ -392,22 +353,13 @@ class EventDiscovery:
     def get_events_by_region(
         self, region: str, force_refresh: bool = False
     ) -> list[DiscoveredEvent]:
-        """Get events filtered by region."""
-        events = self.discover_events(force_refresh=force_refresh)
-
-        # Normalize region input
-        region_lower = region.lower()
-        target_region = None
-
-        for canonical, aliases in REGION_ALIASES.items():
-            if region_lower in aliases:
-                target_region = canonical
-                break
-
+        """Get events for a region name or alias."""
+        target_region = canonical_region(region)
         if not target_region:
             logger.warning(f"Unknown region: {region}")
             return []
 
+        events = self.discover_events(force_refresh=force_refresh)
         return [e for e in events if e.region == target_region]
 
     def get_event_by_id(

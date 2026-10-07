@@ -7,9 +7,11 @@ import pytest
 from bs4 import BeautifulSoup
 
 from valorant_matches.scraping.discovery import (
+    EVENT_CACHE_TTL,
     VCT_EVENTS_URL,
     DiscoveredEvent,
     EventDiscovery,
+    canonical_region,
 )
 
 
@@ -61,7 +63,7 @@ class TestEventDiscovery:
             "html.parser",
         )
         older = EventDiscovery(season=2024, snapshot_dir=tmp_path)
-        with patch.object(older, "_make_request", return_value=html):
+        with patch.object(older, "_fetch", return_value=html):
             events = older.discover_events()
         assert [event.region for event in events] == ["americas", "masters"]
 
@@ -80,9 +82,7 @@ class TestEventDiscovery:
             "html.parser",
         )
         discovery = EventDiscovery(season=2023, snapshot_dir=tmp_path)
-        with patch.object(
-            discovery, "_make_request", side_effect=[first, second]
-        ) as request:
+        with patch.object(discovery, "_fetch", side_effect=[first, second]) as request:
             events = discovery.discover_events()
         assert [event.event_id for event in events] == ["90"]
         assert request.call_count == 2
@@ -132,7 +132,7 @@ class TestEventDiscovery:
         """Test random tournaments are excluded."""
         assert discovery._is_vct_international("Random Tournament 2026") is False
 
-    @patch.object(EventDiscovery, "_make_request")
+    @patch.object(EventDiscovery, "_fetch")
     def test_discover_events_parses_html(self, mock_request, discovery):
         """Test event discovery parses HTML correctly."""
         mock_html = """
@@ -162,11 +162,11 @@ class TestEventDiscovery:
             "html.parser",
         )
         first = EventDiscovery(season=2026, snapshot_dir=tmp_path)
-        with patch.object(first, "_make_request", return_value=html):
+        with patch.object(first, "_fetch", return_value=html):
             assert len(first.discover_events()) == 1
 
         later = EventDiscovery(season=2026, snapshot_dir=tmp_path)
-        with patch.object(later, "_make_request", return_value=None):
+        with patch.object(later, "_fetch", return_value=None):
             events = later.discover_events()
         assert [event.event_id for event in events] == ["2682"]
         assert later.is_stale is True
@@ -180,11 +180,11 @@ class TestEventDiscovery:
             "html.parser",
         )
         discovery = EventDiscovery(season=2025, snapshot_dir=tmp_path)
-        with patch.object(discovery, "_make_request", return_value=html):
+        with patch.object(discovery, "_fetch", return_value=html):
             events = discovery.discover_events()
         assert [event.event_id for event in events] == ["1"]
 
-    @patch.object(EventDiscovery, "_make_request")
+    @patch.object(EventDiscovery, "_fetch")
     def test_discover_events_request_fails(self, mock_request, discovery):
         """Test event discovery when request fails."""
         mock_request.return_value = None
@@ -193,7 +193,7 @@ class TestEventDiscovery:
 
         assert events == []
 
-    @patch.object(EventDiscovery, "_make_request")
+    @patch.object(EventDiscovery, "_fetch")
     def test_can_reach_vlr_uses_shared_request_path(self, mock_request, discovery):
         """Connectivity checks should reuse discovery request settings."""
         mock_request.return_value = BeautifulSoup("<html></html>", "html.parser")
@@ -201,7 +201,7 @@ class TestEventDiscovery:
         assert discovery.can_reach_vlr() is True
         mock_request.assert_called_once()
 
-    @patch.object(EventDiscovery, "_make_request")
+    @patch.object(EventDiscovery, "_fetch")
     def test_discover_events_uses_cache(self, mock_request, discovery):
         """Test event discovery uses cache on subsequent calls."""
         mock_html = """
@@ -297,5 +297,54 @@ def test_discovery_skips_non_string_link_attributes(tmp_path) -> None:
         multi_valued_attributes={"a": ["href"]},
     )
     discovery = EventDiscovery(season=2026, snapshot_dir=tmp_path)
-    with patch.object(discovery, "_make_request", return_value=soup):
+    with patch.object(discovery, "_fetch", return_value=soup):
         assert discovery.discover_events(force_refresh=True) == []
+
+
+def test_fetch_uses_shared_http_policy(tmp_path) -> None:
+    """Discovery requests go through the shared fetcher."""
+    discovery = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+    with patch("valorant_matches.scraping.discovery.fetch_page") as fetch_page:
+        discovery._fetch(VCT_EVENTS_URL)
+    fetch_page.assert_called_once_with(VCT_EVENTS_URL)
+
+
+def test_cached_events_expire(tmp_path) -> None:
+    """The in-process event list is refetched after its TTL."""
+    html = BeautifulSoup(
+        '<a href="/event/2682/vct-2026-americas-kickoff">VCT 2026: Americas</a>',
+        "html.parser",
+    )
+    discovery = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+    with (
+        patch.object(discovery, "_fetch", return_value=html) as fetch,
+        patch("valorant_matches.scraping.discovery.time.monotonic") as clock,
+    ):
+        clock.return_value = 1000.0
+        discovery.discover_events()
+        clock.return_value = 1000.0 + EVENT_CACHE_TTL - 1
+        discovery.discover_events()
+        assert fetch.call_count == 1
+        clock.return_value = 1000.0 + EVENT_CACHE_TTL + 1
+        discovery.discover_events()
+        assert fetch.call_count == 2
+
+
+def test_failed_refresh_reuses_in_process_events(tmp_path) -> None:
+    """A failed forced refresh falls back to events already loaded."""
+    html = BeautifulSoup(
+        '<a href="/event/2682/vct-2026-americas-kickoff">VCT 2026: Americas</a>',
+        "html.parser",
+    )
+    discovery = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+    with patch.object(discovery, "_fetch", side_effect=[html, None]):
+        first = discovery.discover_events()
+        assert discovery.discover_events(force_refresh=True) == first
+    assert discovery.is_stale is True
+
+
+def test_canonical_region() -> None:
+    """Aliases resolve to canonical regions; unknown names to None."""
+    assert canonical_region("AM") == "americas"
+    assert canonical_region("apac") == "pacific"
+    assert canonical_region("mars") is None

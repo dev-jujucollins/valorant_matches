@@ -18,7 +18,7 @@ MEMORY_CACHE_SIZE = 100
 
 # Bump when the cached Match payload shape changes; mismatched entries are
 # discarded instead of failing to rebuild a Match.
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 
 
 class MatchCache:

@@ -1,16 +1,13 @@
-# Formatter class using Rich library for consistent terminal styling.
-from __future__ import annotations
+# Rich terminal output for messages and match listings.
 
-import io
-import sys
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from datetime import tzinfo
 
 from rich.console import Console
 from rich.text import Text
 from rich.theme import Theme
 
-if TYPE_CHECKING:
-    from valorant_matches.scraping.matches import Match
+from valorant_matches.scraping.matches import Match
 
 # Custom theme for consistent styling across the application
 VALORANT_THEME = Theme(
@@ -20,10 +17,8 @@ VALORANT_THEME = Theme(
         "success": "bright_green",
         "info": "bright_blue",
         "primary": "bright_cyan",
-        "secondary": "bright_magenta",
         "muted": "bright_black",
         "highlight": "bold bright_white",
-        "accent": "bright_yellow",
         "team": "bold bright_cyan",
         "score": "bold bright_green",
         "live": "bold bright_red",
@@ -32,166 +27,200 @@ VALORANT_THEME = Theme(
     }
 )
 
+# Status icons for match states
+STATUS_ICONS = {
+    "live": "●",  # Bullet (red circle in most terminals)
+    "upcoming": "⏱",  # Stopwatch
+    "completed": "✓",  # Checkmark
+}
+
+# Widest separator drawn under a full match entry
+MAX_RULE_WIDTH = 100
+
+
+def eta_label(match: Match) -> str:
+    """Describe when an upcoming match starts.
+
+    Args:
+        match: An upcoming match.
+
+    Returns:
+        "in <countdown>" when VLR shows a countdown, else "UPCOMING".
+    """
+    return f"in {match.countdown}" if match.countdown else "UPCOMING"
+
 
 class Formatter:
-    """Enhanced class for formatting text output using Rich library."""
+    """Print styled messages and matches through one Rich console.
+
+    Dynamic text is never parsed as Rich markup, so team names containing
+    brackets print literally.
+    """
 
     def __init__(
-        self, color: bool | None = None, favorite_teams: list[str] | None = None
+        self,
+        color: bool | None = None,
+        favorite_teams: Iterable[str] = (),
+        console: Console | None = None,
     ) -> None:
-        self.console = Console(
-            theme=VALORANT_THEME,
-            force_terminal=sys.stdout.isatty() if color is None else color,
-        )
-        self.set_favorite_teams(favorite_teams or [])
+        """Create a formatter.
 
-    def set_favorite_teams(self, teams: list[str]) -> None:
-        """Mark saved teams in all match views."""
+        Args:
+            color: Force color on or off; None detects the terminal.
+            favorite_teams: Team names to mark with a star.
+            console: Console to print to; built from the theme when omitted.
+        """
+        self.console = console or Console(
+            theme=VALORANT_THEME,
+            highlight=False,
+            force_terminal=color,
+            no_color=color is False,
+        )
+        self.set_favorite_teams(favorite_teams)
+
+    def set_favorite_teams(self, teams: Iterable[str]) -> None:
+        """Mark saved teams in all match views.
+
+        Args:
+            teams: Team names to mark, compared case-insensitively.
+        """
         self.favorite_teams = {team.casefold() for team in teams}
 
     def _team_label(self, team: str) -> str:
         """Add a visible favorite marker to a saved team."""
         return f"★ {team}" if team.casefold() in self.favorite_teams else team
 
-    def format(
-        self, text: str, style: str, bold: bool = False, underline: bool = False
-    ) -> str:
-        """Format text with a style and optional modifiers."""
-        style_parts = []
-        if bold:
-            style_parts.append("bold")
-        if underline:
-            style_parts.append("underline")
-        style_parts.append(style)
+    def print(self, text: str | Text = "", style: str = "", bold: bool = False) -> None:
+        """Print one line without markup parsing or wrapping.
 
-        formatted = Text(text)
-        formatted.stylize(" ".join(style_parts))
-        if not self.console.is_terminal:
-            return formatted.plain
-
-        # Rich only includes ANSI styles when exporting recorded output.
-        # Use off-screen buffer so formatting doesn't print immediately.
-        render_console = Console(
-            file=io.StringIO(),
-            theme=VALORANT_THEME,
-            force_terminal=self.console.is_terminal,
-            width=self.console.width,
-            record=True,
-        )
-        render_console.print(formatted, end="", soft_wrap=True)
-        return render_console.export_text(styles=True)
-
-    def error(self, text: str, bold: bool = True) -> str:
-        """Format error messages."""
-        return self.format(text, "error", bold=bold)
-
-    def warning(self, text: str, bold: bool = False) -> str:
-        """Format warning messages."""
-        return self.format(text, "warning", bold=bold)
-
-    def success(self, text: str, bold: bool = False) -> str:
-        """Format success messages."""
-        return self.format(text, "success", bold=bold)
-
-    def info(self, text: str, bold: bool = False) -> str:
-        """Format info messages."""
-        return self.format(text, "info", bold=bold)
-
-    def primary(self, text: str, bold: bool = False) -> str:
-        """Format primary content."""
-        return self.format(text, "primary", bold=bold)
-
-    def secondary(self, text: str, bold: bool = False) -> str:
-        """Format secondary content."""
-        return self.format(text, "secondary", bold=bold)
-
-    def muted(self, text: str, bold: bool = False) -> str:
-        """Format muted/secondary text."""
-        return self.format(text, "muted", bold=bold)
-
-    def highlight(self, text: str, bold: bool = True) -> str:
-        """Format highlighted text."""
-        return self.format(text, "highlight", bold=bold)
-
-    def accent(self, text: str, bold: bool = False) -> str:
-        """Format accent text."""
-        return self.format(text, "accent", bold=bold)
-
-    def match_header(self, text: str) -> str:
-        """Format match headers with special styling."""
-        return self.format(text, "bright_white", bold=True, underline=True)
-
-    def team_name(self, text: str) -> str:
-        """Format team names."""
-        return self.format(text, "team")
-
-    def score(self, text: str) -> str:
-        """Format scores."""
-        return self.format(text, "score")
-
-    def live_status(self, text: str) -> str:
-        """Format live match status."""
-        return self.format(text, "live")
-
-    def date_time(self, text: str) -> str:
-        """Format date and time."""
-        return self.format(text, "date_time")
-
-    def stats_link(self, text: str) -> str:
-        """Format stats links."""
-        return self.format(text, "link")
-
-    def format_match_compact(
-        self,
-        date: str,
-        team1: str,
-        team2: str,
-        score: str,
-        is_live: bool = False,
-        is_upcoming: bool = False,
-    ) -> str:
-        """Format match in compact single-line format.
-
-        Example: Thursday | Sentinels 2-1 Cloud9 | LIVE
+        Args:
+            text: Plain text or prebuilt Rich text.
+            style: Theme style name for plain text.
+            bold: Add bold to the style.
         """
-        # Build teams vs teams string with score
-        if is_live:
-            status_icon = STATUS_ICONS["live"]
-            status = self.live_status(f"{status_icon} LIVE")
-            match_str = f"{self._team_label(team1)} {score} {self._team_label(team2)}"
-        elif is_upcoming:
-            status_icon = STATUS_ICONS["upcoming"]
-            status = self.warning(f"{status_icon} {score}")
-            match_str = f"{self._team_label(team1)} vs {self._team_label(team2)}"
+        if isinstance(text, str):
+            text = Text(text, style=f"bold {style}" if bold else style)
+        self.console.print(text, soft_wrap=True)
+
+    def blank(self) -> None:
+        """Print an empty line."""
+        self.console.print()
+
+    def error(self, message: str) -> None:
+        """Print an error message."""
+        self.print(message, "error")
+
+    def warning(self, message: str) -> None:
+        """Print a warning message."""
+        self.print(message, "warning")
+
+    def success(self, message: str) -> None:
+        """Print a success message."""
+        self.print(message, "success")
+
+    def info(self, message: str, bold: bool = False) -> None:
+        """Print an informational message."""
+        self.print(message, "info", bold=bold)
+
+    def muted(self, message: str) -> None:
+        """Print de-emphasized text such as hints."""
+        self.print(message, "muted")
+
+    def rule(self, width: int = 40, style: str = "muted") -> None:
+        """Print a horizontal separator.
+
+        Args:
+            width: Number of characters.
+            style: Theme style name.
+        """
+        self.print("─" * width, style)
+
+    def ask(self, prompt: str) -> str:
+        """Prompt for one line of input.
+
+        Args:
+            prompt: Question shown before the cursor.
+
+        Returns:
+            The raw line the user typed.
+
+        Raises:
+            EOFError: When input is closed.
+        """
+        return self.console.input(Text(f"{prompt} ", style="bold info"))
+
+    def format_match_compact(self, match: Match, zone: tzinfo | None = None) -> Text:
+        """Format a match on one line, e.g. "Jan 1 | A 2 : 1 B | ✓".
+
+        Args:
+            match: Match to format.
+            zone: Display timezone; None means local time.
+
+        Returns:
+            Styled single-line text.
+        """
+        date, _ = match.local_date_time(zone)
+        team1, team2 = self._team_label(match.team1), self._team_label(match.team2)
+        score = match.score or "–"
+        if match.status == "live":
+            teams = f"{team1} {score} {team2}"
+            status = Text(f"{STATUS_ICONS['live']} LIVE", style="live")
+        elif match.status == "upcoming":
+            teams = f"{team1} vs {team2}"
+            status = Text(f"{STATUS_ICONS['upcoming']} {eta_label(match)}", "warning")
         else:
-            status_icon = STATUS_ICONS["completed"]
-            status = self.success(status_icon)
-            match_str = f"{self._team_label(team1)} {score} {self._team_label(team2)}"
+            teams = f"{team1} {score} {team2}"
+            status = Text(STATUS_ICONS["completed"], style="success")
+        return Text.assemble((date, "muted"), " | ", (teams, "team"), " | ", status)
 
-        return f"{self.muted(date)} | {self.team_name(match_str)} | {status}"
+    def format_match_full(self, match: Match, zone: tzinfo | None = None) -> Text:
+        """Format a match as a header line, a stats link, and a separator.
 
-    def format_match_full(self, match: Match) -> str:
-        """Format match data for full multi-line display."""
-        from valorant_matches.scraping.matches import format_eta
+        Args:
+            match: Match to format.
+            zone: Display timezone; None means local time.
 
-        separator = "─" * min(100, self.console.width)
-        date_time = self.date_time(f"{match.date}  {match.time}")
-        teams = self.team_name(
-            f"{self._team_label(match.team1)} vs {self._team_label(match.team2)}"
+        Returns:
+            Styled multi-line text ending with a blank line.
+        """
+        date, time = match.local_date_time(zone)
+        teams = f"{self._team_label(match.team1)} vs {self._team_label(match.team2)}"
+        line = Text.assemble(
+            (f"{date}  {time}", "date_time"), " | ", (teams, "team"), " | "
         )
-        stats_link = self.stats_link(f"Stats: {match.url}")
-
-        if match.is_live:
-            status = self.live_status("LIVE")
-            score = self.score(match.score)
-            return f"{date_time} | {teams} | Score: {score} {status}\n{stats_link}\n{self.muted(separator)}\n"
-        elif match.is_upcoming:
-            eta = format_eta(match.score)
-            status = self.warning(eta)
-            return f"{date_time} | {teams} | {status}\n{stats_link}\n{self.muted(separator)}\n"
+        if match.status == "upcoming":
+            line.append(eta_label(match), style="warning")
         else:
-            score = self.score(match.score)
-            return f"{date_time} | {teams} | Score: {score}\n{stats_link}\n{self.muted(separator)}\n"
+            line.append("Score: ")
+            line.append(match.score or "–", style="score")
+            if match.status == "live":
+                line.append(" ")
+                line.append("LIVE", style="live")
+
+        separator = "─" * min(MAX_RULE_WIDTH, self.console.width)
+        return Text("\n").join(
+            [
+                line,
+                Text(f"Stats: {match.url}", style="link"),
+                Text(separator, style="muted"),
+                Text(""),
+            ]
+        )
+
+    def print_match(
+        self, match: Match, zone: tzinfo | None = None, compact: bool = False
+    ) -> None:
+        """Print a match in compact or full form.
+
+        Args:
+            match: Match to print.
+            zone: Display timezone; None means local time.
+            compact: Use the single-line form.
+        """
+        if compact:
+            self.print(self.format_match_compact(match, zone))
+        else:
+            self.print(self.format_match_full(match, zone))
 
     def print_stats_footer(
         self,
@@ -203,35 +232,38 @@ class Formatter:
         tbd_count: int = 0,
         skipped_count: int = 0,
     ) -> None:
-        """Print statistics footer after match display.
+        """Print a one-line summary after a match listing.
 
         Example: Displayed: 15 matches | TBD: 5 | Cache hits: 8 | Time: 2.3s
+
+        Args:
+            displayed: Matches shown.
+            cache_hits: Matches served from cache.
+            failed: Matches or events that could not be loaded.
+            fetch_time: Seconds the run took.
+            live_count: Live matches shown.
+            tbd_count: Matches skipped because teams are undecided.
+            skipped_count: Matches filtered out by the view mode.
         """
-        parts = [
-            f"Displayed: {displayed} match{'es' if displayed != 1 else ''}",
+        plural = "es" if displayed != 1 else ""
+        parts: list[tuple[str, str | None]] = [
+            (f"Displayed: {displayed} match{plural}", None)
         ]
         if skipped_count > 0:
-            parts.append(self.muted(f"Skipped: {skipped_count}"))
+            parts.append((f"Skipped: {skipped_count}", None))
         if tbd_count > 0:
-            parts.append(self.muted(f"TBD: {tbd_count}"))
+            parts.append((f"TBD: {tbd_count}", None))
         if cache_hits > 0:
-            parts.append(f"Cache hits: {cache_hits}")
+            parts.append((f"Cache hits: {cache_hits}", None))
         if failed > 0:
-            parts.append(self.warning(f"Failed: {failed}"))
+            parts.append((f"Failed: {failed}", "warning"))
         if live_count > 0:
-            parts.append(self.live_status(f"Live: {live_count}"))
-        parts.append(f"Time: {fetch_time:.1f}s")
+            parts.append((f"Live: {live_count}", "live"))
+        parts.append((f"Time: {fetch_time:.1f}s", None))
 
-        # Use print() directly since parts may already contain ANSI codes
-        print(self.muted(" | ".join(parts)))
-
-
-# Status icons for match states
-STATUS_ICONS = {
-    "live": "\u25cf",  # Bullet (red circle in most terminals)
-    "upcoming": "\u23f1",  # Stopwatch
-    "completed": "\u2713",  # Checkmark
-}
-
-# Global formatter instance for convenience
-formatter = Formatter()
+        footer = Text(style="muted")
+        for index, (label, style) in enumerate(parts):
+            if index:
+                footer.append(" | ")
+            footer.append(label, style=style)
+        self.print(footer)

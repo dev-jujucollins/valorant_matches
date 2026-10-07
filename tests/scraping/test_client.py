@@ -1,325 +1,218 @@
-# Tests for async scraping client.
+# Tests for the async match client.
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
-import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.scraping.client import (
-    AsyncRateLimiter,
-    AsyncValorantClient,
-    process_matches_async,
+from valorant_matches.scraping.client import AsyncValorantClient, process_matches_async
+from valorant_matches.scraping.http import HttpFetcher
+from valorant_matches.scraping.matches import (
+    FetchError,
+    Match,
+    MatchStatus,
+    ProcessMatchResult,
 )
-from valorant_matches.scraping.matches import Match, ProcessMatchResult
 
 
-def make_result(href: str, is_upcoming: bool = False) -> ProcessMatchResult:
-    """Build a ProcessMatchResult for a successful match fetch."""
-    return ProcessMatchResult(
-        match=Match(
-            date="Dec 23",
-            time="3:00 PM",
-            team1="Team A",
-            team2="Team B",
-            score="in 2h" if is_upcoming else "2-1",
-            is_live=False,
-            url=f"https://vlr.gg{href}",
-            is_upcoming=is_upcoming,
-        )
+def make_match(url: str, status: MatchStatus = "completed") -> Match:
+    """Build a match with the given status."""
+    return Match(
+        url=url,
+        team1="Team A",
+        team2="Team B",
+        status=status,
+        score="2 : 1" if status != "upcoming" else None,
+        starts_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
 
-class TestAsyncRateLimiter:
-    """Tests for AsyncRateLimiter."""
-
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self):
-        """First request should not be delayed."""
-        limiter = AsyncRateLimiter(delay=1.0)
-        start = asyncio.get_event_loop().time()
-        await limiter.acquire()
-        elapsed = asyncio.get_event_loop().time() - start
-        assert elapsed < 0.1  # Should be nearly instant
-
-    @pytest.mark.asyncio
-    async def test_subsequent_requests_delayed(self):
-        """Subsequent requests should be delayed by the configured delay."""
-        limiter = AsyncRateLimiter(delay=0.2)
-        await limiter.acquire()
-
-        start = asyncio.get_event_loop().time()
-        await limiter.acquire()
-        elapsed = asyncio.get_event_loop().time() - start
-
-        # Should be delayed by at least the delay time
-        assert elapsed >= 0.15  # Some tolerance
-
-    @pytest.mark.asyncio
-    async def test_concurrent_requests_serialized(self):
-        """Concurrent requests should be serialized by the lock."""
-        limiter = AsyncRateLimiter(delay=0.1)
-        results = []
-
-        async def acquire_and_record(n: int):
-            await limiter.acquire()
-            results.append(n)
-
-        # Launch multiple concurrent requests
-        await asyncio.gather(
-            acquire_and_record(1),
-            acquire_and_record(2),
-            acquire_and_record(3),
-        )
-
-        # All should complete
-        assert len(results) == 3
+def make_result(url: str, status: MatchStatus = "completed") -> ProcessMatchResult:
+    """Build a ProcessMatchResult for a successful match fetch."""
+    return ProcessMatchResult(match=make_match(url, status))
 
 
-class TestAsyncValorantClientContextManager:
-    """Tests for AsyncValorantClient context manager."""
+URL = "https://vlr.gg/123/match"
 
-    @pytest.mark.asyncio
-    async def test_exit_closes_session(self):
-        """Exiting context should close the session."""
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            session = client._session
 
-        assert session is not None
-        assert session.closed
+class TestClientCacheControl:
+    """Tests for cache enable/disable wiring."""
 
-    @pytest.mark.asyncio
-    async def test_session_not_initialized_error(self):
-        """Using client without context should raise RuntimeError."""
-        client = AsyncValorantClient(cache_enabled=False)
-        with pytest.raises(RuntimeError, match="Client not initialized"):
-            await client._make_request("https://example.com")
+    def test_cache_enabled_by_default(self) -> None:
+        """Cache should be enabled unless disabled explicitly."""
+        with patch("valorant_matches.scraping.client.MatchCache") as cache:
+            AsyncValorantClient()
+        cache.assert_called_once_with(enabled=True)
+
+    def test_cache_disabled(self) -> None:
+        """Cache can be disabled via constructor."""
+        with patch("valorant_matches.scraping.client.MatchCache") as cache:
+            AsyncValorantClient(cache_enabled=False)
+        cache.assert_called_once_with(enabled=False)
 
     def test_default_client_honors_environment_cache_setting(self) -> None:
-        """Client default must pass configured cache choice to cache storage."""
+        """Client default passes the configured cache choice to storage."""
         with (
             patch("valorant_matches.scraping.client.CACHE_ENABLED", False),
             patch("valorant_matches.scraping.client.MatchCache") as cache,
         ):
-            client = AsyncValorantClient()
-        assert client._cache_enabled is False
+            AsyncValorantClient()
         cache.assert_called_once_with(enabled=False)
 
-    @pytest.mark.asyncio
+
+class TestProcessMatch:
+    """Tests for AsyncValorantClient.process_match."""
+
+    async def test_cached_completed_match_skips_request(self) -> None:
+        """A valid cached result is used without a request."""
+        cached = make_match(URL)
+        with (
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+            patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch,
+        ):
+            cache.return_value.get.return_value = cached.to_dict()
+            result = await AsyncValorantClient().process_match(URL)
+        assert result.match == cached
+        assert result.cache_hit
+        fetch.assert_not_awaited()
+
+    async def test_cached_match_skipped_in_upcoming_view(self) -> None:
+        """A cached completed match is known not to be upcoming."""
+        with (
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+            patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch,
+        ):
+            cache.return_value.get.return_value = make_match(URL).to_dict()
+            result = await AsyncValorantClient().process_match(URL, upcoming_only=True)
+        assert result.skipped and result.cache_hit
+        fetch.assert_not_awaited()
+
     async def test_malformed_cached_match_refetches(self) -> None:
-        """Incomplete cached Match must not block a fresh HTTP result."""
-        fresh = make_result("/123/match")
+        """An incomplete cached record must not block a fresh result."""
+        fresh_match = make_match(URL)
+        fresh = ProcessMatchResult(match=fresh_match)
         with (
             patch("valorant_matches.scraping.client.MatchCache") as cache,
             patch.object(
-                AsyncValorantClient, "_make_request", new_callable=AsyncMock
-            ) as request,
+                HttpFetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=BeautifulSoup("<html></html>", "lxml"),
+            ) as fetch,
             patch(
                 "valorant_matches.scraping.client.build_match_from_soup",
                 return_value=fresh,
             ),
         ):
             cache.return_value.get.return_value = {"team1": "A"}
-            request.return_value = BeautifulSoup("<html></html>", "lxml")
-            client = AsyncValorantClient()
-            result = await client.process_match({"href": "/123/match"})
-        assert result.match == fresh.match
-        assert request.await_count == 1
-        cache.return_value.invalidate.assert_called_once()
+            result = await AsyncValorantClient().process_match(URL)
+        assert result.match == fresh_match
+        assert fetch.await_count == 1
+        cache.return_value.invalidate.assert_called_once_with(URL)
+        cache.return_value.set.assert_called_once_with(URL, fresh_match.to_dict())
 
+    async def test_unfinished_match_is_not_cached(self) -> None:
+        """Live and upcoming results clear any cached copy instead."""
+        with (
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+            patch.object(
+                HttpFetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=BeautifulSoup("<html></html>", "lxml"),
+            ),
+            patch(
+                "valorant_matches.scraping.client.build_match_from_soup",
+                return_value=make_result(URL, "live"),
+            ),
+        ):
+            cache.return_value.get.return_value = None
+            await AsyncValorantClient().process_match(URL)
+        cache.return_value.set.assert_not_called()
+        cache.return_value.invalidate.assert_called_once_with(URL)
 
-class TestAsyncValorantClientMakeRequest:
-    """Tests for _make_request method."""
-
-    @pytest.mark.asyncio
-    async def test_successful_request(self):
-        """Test successful HTTP request returns BeautifulSoup."""
-        html = "<html><body><h1>Test</h1></body></html>"
-
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value=html)
-
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(
-            return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()
-            )
-        )
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client._session = mock_session
-            client._rate_limiter = AsyncMock()
-            client._rate_limiter.acquire = AsyncMock()
-
-            result = await client._make_request("https://vlr.gg/test")
-
-            assert result is not None
-            assert isinstance(result, BeautifulSoup)
-
-    @pytest.mark.asyncio
-    async def test_retryable_status_codes(self):
-        """Test that 5xx and 429 status codes trigger retry."""
+    async def test_fetch_failure_reports_recorded_error(self) -> None:
+        """The fetcher's recorded error is passed through."""
         client = AsyncValorantClient(cache_enabled=False)
-
-        assert client._is_retryable_status(500) is True
-        assert client._is_retryable_status(502) is True
-        assert client._is_retryable_status(503) is True
-        assert client._is_retryable_status(429) is True
-        assert client._is_retryable_status(404) is False
-        assert client._is_retryable_status(400) is False
-
-    @pytest.mark.asyncio
-    async def test_http_error_returns_none(self):
-        """Test that HTTP errors return None after retries."""
-        mock_response = AsyncMock()
-        mock_response.status = 404
-
-        mock_session = AsyncMock()
-        mock_session.get = MagicMock(
-            return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_response), __aexit__=AsyncMock()
-            )
-        )
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client._session = mock_session
-            client._rate_limiter = AsyncMock()
-            client._rate_limiter.acquire = AsyncMock()
-
-            result = await client._make_request("https://vlr.gg/test", retries=1)
-
-            assert result is None
+        client.http.errors[URL] = FetchError(URL, "http", "HTTP 503")
+        with patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch:
+            fetch.return_value = None
+            result = await client.process_match(URL)
+        assert result.error is not None
+        assert result.error.message == "HTTP 503"
 
 
 class TestProcessMatchesAsync:
-    """Tests for process_matches_async function."""
+    """Tests for process_matches_async."""
 
-    @pytest.mark.asyncio
-    async def test_empty_match_links(self):
-        """Test with empty match links list."""
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            processed = await process_matches_async(client, [])
-            assert processed.results == []
-            assert processed.tbd_count == 0
+    async def test_empty_match_urls(self) -> None:
+        """No URLs produce an empty result."""
+        processed = await process_matches_async(
+            AsyncValorantClient(cache_enabled=False), []
+        )
+        assert processed.results == []
+        assert processed.tbd_count == 0
 
-    @pytest.mark.asyncio
-    async def test_progress_callback_called(self):
-        """Test that progress callback is called for each match."""
-        callback_count = 0
+    async def test_progress_callback_called(self) -> None:
+        """The callback runs once per match."""
+        calls: list[int] = []
+        client = AsyncValorantClient(cache_enabled=False)
+        client.process_match = AsyncMock(return_value=ProcessMatchResult())
+        await process_matches_async(
+            client,
+            ["https://vlr.gg/1/a", "https://vlr.gg/2/b"],
+            progress_callback=lambda: calls.append(1),
+        )
+        assert len(calls) == 2
 
-        def progress_callback():
-            nonlocal callback_count
-            callback_count += 1
+    async def test_concurrent_processing_keeps_page_order(self) -> None:
+        """Matches run concurrently but results keep the event page order."""
+        delays = {"https://vlr.gg/1": 0.15, "https://vlr.gg/2": 0.05}
+        started: list[float] = []
 
-        mock_links = [
-            {"href": "/123/match1"},
-            {"href": "/456/match2"},
-        ]
+        async def fake_process(url: str, upcoming_only: bool = False):
+            started.append(asyncio.get_running_loop().time())
+            await asyncio.sleep(delays[url])
+            return make_result(url)
 
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            # Mock process_match to return empty results (simulating failed matches)
-            client.process_match = AsyncMock(return_value=ProcessMatchResult())
+        client = AsyncValorantClient(cache_enabled=False)
+        client.process_match = fake_process  # type: ignore[method-assign]
+        processed = await process_matches_async(client, list(delays))
+        assert max(started) - min(started) < 0.05
+        assert [match.url for match in processed.results] == list(delays)
 
-            await process_matches_async(
-                client, mock_links, progress_callback=progress_callback
-            )
+    async def test_exception_handling(self) -> None:
+        """Unexpected exceptions count as failures with the match URL."""
 
-            assert callback_count == 2
-
-    @pytest.mark.asyncio
-    async def test_concurrent_processing(self):
-        """Test that matches are processed concurrently."""
-        processing_times = []
-        start_time = asyncio.get_event_loop().time()
-
-        async def mock_process_match(link, upcoming_only=False):
-            processing_times.append(asyncio.get_event_loop().time() - start_time)
-            await asyncio.sleep(0.1)  # Simulate network delay
-            return make_result(link["href"])
-
-        mock_links = [
-            {"href": "/1/match1"},
-            {"href": "/2/match2"},
-            {"href": "/3/match3"},
-        ]
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client.process_match = mock_process_match  # type: ignore[method-assign]
-
-            processed = await process_matches_async(client, mock_links)
-
-            # All should start at roughly the same time (concurrent)
-            assert len(processing_times) == 3
-            # All start times should be close together (within 0.05s)
-            assert max(processing_times) - min(processing_times) < 0.05
-
-            # Should have results for all matches
-            assert len(processed.results) == 3
-            assert processed.tbd_count == 0
-
-    @pytest.mark.asyncio
-    async def test_results_sorted_by_original_order(self):
-        """Test that results maintain original order despite concurrent processing."""
-        delays = {"/1/match1": 0.15, "/2/match2": 0.05, "/3/match3": 0.1}
-
-        async def mock_process_match(link, upcoming_only=False):
-            await asyncio.sleep(delays[link["href"]])
-            return make_result(link["href"])
-
-        mock_links = [
-            {"href": "/1/match1"},
-            {"href": "/2/match2"},
-            {"href": "/3/match3"},
-        ]
-
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client.process_match = mock_process_match  # type: ignore[method-assign]
-
-            processed = await process_matches_async(client, mock_links)
-
-            # Results should be in original order, not completion order
-            assert processed.results[0][0]["href"] == "/1/match1"
-            assert processed.results[1][0]["href"] == "/2/match2"
-            assert processed.results[2][0]["href"] == "/3/match3"
-
-    @pytest.mark.asyncio
-    async def test_exception_handling(self):
-        """Test that exceptions are caught and logged."""
-
-        async def mock_process_match(link, upcoming_only=False):
-            if "error" in link["href"]:
+        async def fake_process(url: str, upcoming_only: bool = False):
+            if "error" in url:
                 raise ValueError("Test error")
-            return make_result(link["href"])
+            return make_result(url)
 
-        mock_links = [
-            {"href": "/1/error-match"},
-            {"href": "/2/good-match"},
-        ]
+        client = AsyncValorantClient(cache_enabled=False)
+        client.process_match = fake_process  # type: ignore[method-assign]
+        processed = await process_matches_async(
+            client, ["https://vlr.gg/1/error", "https://vlr.gg/2/good"]
+        )
+        assert [match.url for match in processed.results] == ["https://vlr.gg/2/good"]
+        assert processed.failed_count == 1
+        assert processed.errors[0].url == "https://vlr.gg/1/error"
 
-        async with AsyncValorantClient(cache_enabled=False) as client:
-            client.process_match = mock_process_match  # type: ignore[method-assign]
+    async def test_view_mode_filters_by_status(self) -> None:
+        """Results view skips matches that are not completed."""
+        results = {
+            "https://vlr.gg/1": make_result("https://vlr.gg/1"),
+            "https://vlr.gg/2": make_result("https://vlr.gg/2", "upcoming"),
+            "https://vlr.gg/3": ProcessMatchResult(is_tbd=True),
+        }
 
-            # Should not raise, exceptions are caught
-            processed = await process_matches_async(client, mock_links)
+        async def fake_process(url: str, upcoming_only: bool = False):
+            return results[url]
 
-            # Only the successful match should be in results
-            assert len(processed.results) == 1
-            assert "good" in processed.results[0][0]["href"]
-            assert processed.failed_count == 1
-
-
-class TestClientCacheControl:
-    """Tests for cache enable/disable wiring."""
-
-    def test_cache_enabled_by_default(self):
-        """Cache should be enabled unless disabled explicitly."""
-        with patch("valorant_matches.scraping.client.MatchCache") as mock_cache:
-            AsyncValorantClient()
-            mock_cache.assert_called_once_with(enabled=True)
-
-    def test_cache_disabled(self):
-        """Cache can be disabled via constructor."""
-        with patch("valorant_matches.scraping.client.MatchCache") as mock_cache:
-            AsyncValorantClient(cache_enabled=False)
-            mock_cache.assert_called_once_with(enabled=False)
+        client = AsyncValorantClient(cache_enabled=False)
+        client.process_match = fake_process  # type: ignore[method-assign]
+        processed = await process_matches_async(client, list(results), "results")
+        assert [match.url for match in processed.results] == ["https://vlr.gg/1"]
+        assert processed.skipped_count == 1
+        assert processed.tbd_count == 1

@@ -2,182 +2,98 @@
 
 import csv
 import json
-import tempfile
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pytest
 
 from valorant_matches.output.exporters import (
+    EXPORT_FIELDS,
     export_matches,
     match_to_dict,
 )
 from valorant_matches.scraping.matches import Match
 
+BASE_MATCH = Match(
+    url="https://vlr.gg/123",
+    team1="Sentinels",
+    team2="Cloud9",
+    status="completed",
+    score="2-1",
+    date_label="Dec 23",
+    time_label="3:00 PM",
+)
 
-def make_match(
-    date: str = "Dec 23",
-    time: str = "3:00 PM",
-    team1: str = "Team A",
-    team2: str = "Team B",
-    score: str = "2-1",
-    is_live: bool = False,
-    is_upcoming: bool = False,
-    url: str = "https://vlr.gg/123",
-) -> Match:
-    """Helper to create Match objects for testing."""
-    return Match(
-        date=date,
-        time=time,
-        team1=team1,
-        team2=team2,
-        score=score,
-        is_live=is_live,
-        is_upcoming=is_upcoming,
-        url=url,
-    )
+
+def make_match(**overrides: Any) -> Match:
+    """Build a match for export tests."""
+    return replace(BASE_MATCH, **overrides)
 
 
 class TestMatchToDict:
-    """Tests for match_to_dict function."""
+    """Tests for match_to_dict."""
 
-    def test_completed_match(self):
-        """Test converting completed match to dict."""
-        match = make_match(
-            team1="Sentinels",
-            team2="Cloud9",
-            score="2-1",
-        )
-        data = match_to_dict(match)
+    def test_completed_match(self) -> None:
+        """Completed matches export their score and status."""
+        data = match_to_dict(make_match())
+        assert data == {
+            "date_time": "Dec 23 3:00 PM",
+            "start_time": None,
+            "team1": "Sentinels",
+            "team2": "Cloud9",
+            "score": "2-1",
+            "countdown": None,
+            "status": "completed",
+            "url": "https://vlr.gg/123",
+        }
 
-        assert data["team1"] == "Sentinels"
-        assert data["team2"] == "Cloud9"
-        assert data["score"] == "2-1"
-        assert data["status"] == "completed"
-        assert data["url"] == "https://vlr.gg/123"
-
-    def test_live_match(self):
-        """Test converting live match to dict."""
-        match = make_match(is_live=True, score="1-1")
-        data = match_to_dict(match)
-
-        assert data["status"] == "live"
-        assert data["score"] == "1-1"
-
-    def test_upcoming_match(self):
-        """Test converting upcoming match to dict."""
-        match = make_match(is_upcoming=True, score="in 2h 30m")
-        data = match_to_dict(match)
-
+    def test_upcoming_match(self) -> None:
+        """Upcoming matches export the countdown separately from the score."""
+        data = match_to_dict(make_match(status="upcoming", score=None, countdown="2h"))
         assert data["status"] == "upcoming"
-        assert data["score"] == "in 2h 30m"
+        assert data["score"] is None
+        assert data["countdown"] == "2h"
+
+    def test_start_time_is_utc_and_date_time_is_local(self) -> None:
+        """start_time stays UTC; date_time follows the display timezone."""
+        match = make_match(starts_at=datetime(2026, 1, 2, 1, tzinfo=UTC))
+        data = match_to_dict(match, ZoneInfo("America/Los_Angeles"))
+        assert data["start_time"] == "2026-01-02T01:00:00+00:00"
+        assert data["date_time"] == "January 01, 2026 05:00 PM PST"
 
 
-class TestExportJson:
-    """Tests for export_json function."""
+class TestExport:
+    """Tests for file export."""
 
-    def test_export_json_content(self):
-        """Test that exported JSON contains correct data."""
-        results = [
-            (
-                {"href": "/1"},
-                make_match(team1="Sentinels", team2="Cloud9", score="2-1"),
-            ),
-        ]
+    def test_export_json_content(self, tmp_path: Path) -> None:
+        """Exported JSON holds the rows and a count."""
+        path = tmp_path / "nested" / "test.json"
+        assert export_matches([make_match()], "json", path) == 1
+        data = json.loads(path.read_text())
+        assert data["count"] == 1
+        assert data["matches"][0]["team1"] == "Sentinels"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test.json"
-            export_matches(results, "json", output_path)
+    def test_export_csv_content(self, tmp_path: Path) -> None:
+        """Exported CSV has the expected header and an empty cell for None."""
+        path = tmp_path / "test.csv"
+        export_matches([make_match()], "csv", path)
+        with open(path, newline="") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+        assert reader.fieldnames == EXPORT_FIELDS
+        assert rows[0]["score"] == "2-1"
+        assert rows[0]["start_time"] == ""
 
-            with open(output_path) as f:
-                data = json.load(f)
-
-            match = data["matches"][0]
-            assert match["team1"] == "Sentinels"
-            assert match["team2"] == "Cloud9"
-            assert match["score"] == "2-1"
-
-    def test_export_json_creates_parent_dirs(self):
-        """Test that export_json creates parent directories if needed."""
-        results = [({"href": "/1"}, make_match())]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "nested" / "dir" / "matches.json"
-            export_matches(results, "json", output_path)
-
-            assert output_path.exists()
-
-
-class TestExportCsv:
-    """Tests for export_csv function."""
-
-    def test_export_csv_content(self):
-        """Test that exported CSV contains correct headers and data."""
-        results = [
-            (
-                {"href": "/1"},
-                make_match(team1="Sentinels", team2="Cloud9", score="2-1"),
-            ),
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test.csv"
-            export_matches(results, "csv", output_path)
-
-            with open(output_path) as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-
-            assert len(rows) == 1
-            row = rows[0]
-            assert row["team1"] == "Sentinels"
-            assert row["team2"] == "Cloud9"
-            assert row["score"] == "2-1"
-
-    def test_export_csv_has_headers(self):
-        """Test that CSV has expected headers."""
-        results = [({"href": "/1"}, make_match())]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test.csv"
-            export_matches(results, "csv", output_path)
-
-            with open(output_path) as f:
-                reader = csv.reader(f)
-                headers = next(reader)
-
-            expected = [
-                "date_time",
-                "start_time",
-                "team1",
-                "team2",
-                "score",
-                "status",
-                "url",
-            ]
-            assert headers == expected
-
-
-class TestExportMatches:
-    """Tests for export_matches function."""
-
-    def test_export_matches_invalid_format(self):
-        """Test export_matches with invalid format raises error."""
-        import pytest
-
-        results = [({"href": "/1"}, make_match())]
-
+    def test_invalid_format(self) -> None:
+        """Unknown formats raise ValueError."""
         with pytest.raises(ValueError, match="Unsupported export format"):
-            export_matches(results, "invalid", "output.txt")
+            export_matches([make_match()], "invalid", "output.txt")
 
-    def test_export_matches_default_path(self):
-        """Test export_matches with default output path."""
-        import os
-
-        results = [({"href": "/1"}, make_match())]
-
-        # Use current directory for default path test
-        try:
-            export_matches(results, "json", None)
-            assert Path("matches.json").exists()
-        finally:
-            # Cleanup
-            if Path("matches.json").exists():
-                os.remove("matches.json")
+    def test_default_path(self, tmp_path: Path, monkeypatch) -> None:
+        """Without a path the file is matches.<format> in the working directory."""
+        monkeypatch.chdir(tmp_path)
+        export_matches([make_match()], "json")
+        assert (tmp_path / "matches.json").exists()

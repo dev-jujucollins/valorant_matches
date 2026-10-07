@@ -3,7 +3,10 @@
 from unittest.mock import Mock
 
 from valorant_matches.scraping.discovery import DiscoveredEvent
-from valorant_matches.scraping.event_selection import get_event_for_region
+from valorant_matches.scraping.event_selection import (
+    get_event_for_region,
+    select_events,
+)
 
 
 def make_event(event_id: str, status: str, region: str = "americas") -> DiscoveredEvent:
@@ -81,3 +84,58 @@ class TestGetEventForRegion:
         assert selected is not None
         assert selected.status == "upcoming"
         assert selected.event_id == "102"
+
+
+class TestSelectEvents:
+    """Tests for choosing which events a CLI run fetches."""
+
+    def _discovery(self) -> Mock:
+        discovery = Mock()
+        events = {
+            "americas": [
+                make_event("10", "completed"),
+                make_event("11", "ongoing"),
+                make_event("12", "upcoming"),
+            ],
+            "emea": [make_event("20", "ongoing", region="emea")],
+        }
+        discovery.get_events_by_region.side_effect = (
+            lambda region, force_refresh=False: events.get(region, [])
+        )
+        discovery.list_regions.return_value = ["americas", "emea", "other"]
+        return discovery
+
+    def test_event_id_wins(self) -> None:
+        """An explicit event ID bypasses regional ranking."""
+        discovery = self._discovery()
+        discovery.get_event_by_id.return_value = make_event("42", "ongoing")
+        events = select_events(discovery, event_id="42", force_refresh=True)
+        assert [event.event_id for event in events] == ["42"]
+        discovery.get_event_by_id.assert_called_once_with("42", force_refresh=True)
+
+    def test_unknown_event_id(self) -> None:
+        """A missing event ID selects nothing."""
+        discovery = self._discovery()
+        discovery.get_event_by_id.return_value = None
+        assert select_events(discovery, event_id="1") == []
+
+    def test_region_picks_best_event(self) -> None:
+        """A region outside upcoming view fetches its single best event."""
+        events = select_events(self._discovery(), region="americas")
+        assert [event.event_id for event in events] == ["11"]
+
+    def test_upcoming_combines_active_events(self) -> None:
+        """Upcoming view fetches every active event, future first."""
+        events = select_events(
+            self._discovery(), region="americas", view_mode="upcoming"
+        )
+        assert [event.event_id for event in events] == ["12", "11"]
+
+    def test_favorites_span_vct_regions(self) -> None:
+        """Favorites without a region cover each VCT region, skipping others."""
+        events = select_events(self._discovery(), favorites_only=True)
+        assert [event.event_id for event in events] == ["11", "20"]
+
+    def test_nothing_selected(self) -> None:
+        """No target selects no events."""
+        assert select_events(self._discovery()) == []

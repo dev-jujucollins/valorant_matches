@@ -1,260 +1,131 @@
-# Async HTTP client for high-performance match fetching.
+# Async match client: event match lists, cached match pages, and batching.
 
 import asyncio
 import logging
 import re
-import time
-from dataclasses import asdict
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
-
-import aiohttp
-from bs4 import BeautifulSoup
+from collections.abc import Callable
+from types import TracebackType
 
 from valorant_matches.cache import MatchCache
-from valorant_matches.config import (
-    BASE_URL,
-    CACHE_ENABLED,
-    HEADERS,
-    MAX_RETRIES,
-    RATE_LIMIT_DELAY,
-    REQUEST_TIMEOUT,
-)
+from valorant_matches.config import CACHE_ENABLED
+from valorant_matches.scraping.http import HttpFetcher
 from valorant_matches.scraping.matches import (
-    CircuitBreakerMixin,
-    CircuitBreakerOpen,
     FetchError,
     Match,
     ProcessedMatches,
     ProcessMatchResult,
     build_match_from_soup,
     extract_event_slug,
-    find_event_match_links,
+    find_event_match_urls,
     should_use_cached_match,
 )
 
 logger = logging.getLogger("valorant_matches")
 
-
-class AsyncRateLimiter:
-    """Async-compatible rate limiter."""
-
-    def __init__(self, delay: float = RATE_LIMIT_DELAY):
-        self._delay = delay
-        self._last_request = 0.0
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> None:
-        """Wait for rate limit before proceeding."""
-        async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._last_request
-            if elapsed < self._delay:
-                await asyncio.sleep(self._delay - elapsed)
-            self._last_request = time.monotonic()
+# Status a match must have to be shown in each view; None keeps everything.
+VIEW_MODE_STATUS = {"all": None, "results": "completed", "upcoming": "upcoming"}
 
 
-class AsyncValorantClient(CircuitBreakerMixin):
-    """Async client for fetching and processing Valorant match data."""
+class AsyncValorantClient:
+    """Fetch event and match pages, reading and writing the match cache."""
 
-    def __init__(self, cache_enabled: bool | None = None):
-        if cache_enabled is None:
-            cache_enabled = CACHE_ENABLED
-        self.cache = MatchCache(enabled=cache_enabled)
-        self._cache_enabled = cache_enabled
-        self._init_circuit_breaker()
-        self._slug_pattern_cache: dict[str, re.Pattern] = {}
-        self._rate_limiter = AsyncRateLimiter()
-        self._session: aiohttp.ClientSession | None = None
-        self.request_errors: dict[str, FetchError] = {}
+    def __init__(
+        self, cache_enabled: bool | None = None, http: HttpFetcher | None = None
+    ) -> None:
+        self.cache = MatchCache(
+            enabled=CACHE_ENABLED if cache_enabled is None else cache_enabled
+        )
+        self.http = http or HttpFetcher()
 
     async def __aenter__(self) -> "AsyncValorantClient":
-        """Async context manager entry."""
-        timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-        connector = aiohttp.TCPConnector(
-            limit=20,  # Max concurrent connections
-            limit_per_host=10,  # Per-host limit
-        )
-        self._session = aiohttp.ClientSession(
-            headers=HEADERS,
-            timeout=timeout,
-            connector=connector,
-        )
+        """Open the underlying HTTP session."""
+        await self.http.__aenter__()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit."""
-        if self._session:
-            await self._session.close()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Close the underlying HTTP session."""
+        await self.http.__aexit__(exc_type, exc_val, exc_tb)
 
-    def _get_slug_pattern(self, slug: str) -> re.Pattern:
-        """Get or create a compiled slug pattern (cached)."""
-        if slug not in self._slug_pattern_cache:
-            escaped_slug = re.escape(slug.lower())
-            self._slug_pattern_cache[slug] = re.compile(rf"(^|-)({escaped_slug})(-|$)")
-        return self._slug_pattern_cache[slug]
-
-    def _is_retryable_status(self, status: int) -> bool:
-        """Check if HTTP status code is retryable."""
-        return status >= 500 or status == 429
-
-    def _retry_delay(self, retry_after: str | None, attempt: int) -> float:
-        """Honor delta-seconds and HTTP-date Retry-After values."""
-        if retry_after:
-            try:
-                if retry_after.strip().isdigit():
-                    return float(retry_after)
-                deadline = parsedate_to_datetime(retry_after)
-                if deadline.tzinfo is not None:
-                    return max(0.0, (deadline - datetime.now(UTC)).total_seconds())
-            except (ValueError, TypeError, OverflowError):
-                pass
-        return self._calculate_backoff(attempt)
-
-    async def _make_request(
-        self, url: str, retries: int = MAX_RETRIES
-    ) -> BeautifulSoup | None:
-        """Make an async HTTP request with retry logic."""
-        if not self._session:
-            raise RuntimeError("Client not initialized. Use async with context.")
-
-        self.request_errors.pop(url, None)
-        try:
-            self._check_circuit_breaker()
-        except CircuitBreakerOpen as e:
-            logger.warning(str(e))
-            self.request_errors[url] = FetchError(url, "circuit", str(e))
-            return None
-
-        for attempt in range(retries):
-            try:
-                await self._rate_limiter.acquire()
-                self._check_circuit_breaker()
-                async with self._session.get(url) as response:
-                    if response.status >= 400:
-                        if (
-                            self._is_retryable_status(response.status)
-                            and attempt < retries - 1
-                        ):
-                            logger.warning(
-                                f"Retryable status {response.status} (attempt {attempt + 1})"
-                            )
-                            await asyncio.sleep(
-                                self._retry_delay(
-                                    response.headers.get("Retry-After"), attempt
-                                )
-                            )
-                            continue
-                        else:
-                            logger.warning(f"HTTP error {response.status} for {url}")
-                            self._record_failure()
-                            self.request_errors[url] = FetchError(
-                                url, "http", f"HTTP {response.status}"
-                            )
-                            return None
-
-                    text = await response.text()
-                    self._record_success()
-                    # Run BeautifulSoup parsing in thread pool to avoid blocking
-                    soup = await asyncio.to_thread(BeautifulSoup, text, "lxml")
-                    return soup
-
-            except CircuitBreakerOpen as e:
-                logger.warning(str(e))
-                self.request_errors[url] = FetchError(url, "circuit", str(e))
-                return None
-
-            except TimeoutError:
-                if attempt < retries - 1:
-                    logger.warning(f"Timeout (attempt {attempt + 1}/{retries})")
-                    await asyncio.sleep(self._calculate_backoff(attempt))
-                else:
-                    logger.error(f"Timeout after {retries} attempts for {url}")
-                    self.request_errors[url] = FetchError(
-                        url, "timeout", f"Timed out after {retries} attempts"
-                    )
-                    self._record_failure()
-                    return None
-
-            except aiohttp.ClientError as e:
-                if attempt < retries - 1:
-                    logger.warning(f"Client error (attempt {attempt + 1}): {e}")
-                    await asyncio.sleep(self._calculate_backoff(attempt))
-                else:
-                    logger.error(f"Failed after {retries} attempts: {e}")
-                    self.request_errors[url] = FetchError(url, "network", str(e))
-                    self._record_failure()
-                    return None
-
-        return None
-
-    async def fetch_event_matches(
+    async def fetch_event_match_urls(
         self, event_url: str, event_slug: str | None = None
-    ) -> list[dict]:
-        """Fetch all matches for an event asynchronously."""
-        logger.info(f"Fetching matches for event:\n{event_url}\n")
-        soup = await self._make_request(event_url)
+    ) -> list[str]:
+        """Fetch the match URLs listed on an event's matches page.
+
+        Args:
+            event_url: Event matches page URL.
+            event_slug: Slug that match links must contain; derived when omitted.
+
+        Returns:
+            Absolute match URLs, or an empty list when the page failed.
+        """
+        logger.info(f"Fetching matches for event: {event_url}")
+        soup = await self.http.fetch(event_url)
         if not soup:
             return []
 
-        if not event_slug:
-            event_slug = extract_event_slug(event_url)
-
-        slug_pattern = self._get_slug_pattern(event_slug) if event_slug else None
-
-        match_links = find_event_match_links(soup, slug_pattern)
-
-        logger.info(f"Found {len(match_links)} match links")
-        return match_links
+        event_slug = event_slug or extract_event_slug(event_url)
+        slug_pattern = (
+            re.compile(rf"(^|-)({re.escape(event_slug.lower())})(-|$)")
+            if event_slug
+            else None
+        )
+        match_urls = find_event_match_urls(soup, slug_pattern)
+        logger.info(f"Found {len(match_urls)} match links")
+        return match_urls
 
     async def process_match(
-        self, link: dict, upcoming_only: bool = False
+        self, match_url: str, upcoming_only: bool = False
     ) -> ProcessMatchResult:
-        """Process a single match asynchronously.
+        """Load one match from the cache or its page.
+
+        Args:
+            match_url: Absolute match page URL.
+            upcoming_only: Mark non-upcoming matches as skipped.
 
         Returns:
-            ProcessMatchResult with match/status/cache metadata.
+            The match with cache, TBD, skip, or error metadata.
         """
-        match_url = urljoin(BASE_URL, link["href"])
         logger.debug(f"Processing match: {match_url}")
 
         try:
-            if not upcoming_only and self._cache_enabled:
-                cached_data = self.cache.get(match_url)
-                if cached_data is not None:
-                    try:
-                        cached_match = Match(**cached_data)
-                    except (TypeError, ValueError):
-                        logger.warning(
-                            "Discarding malformed cached match for %s", match_url
-                        )
-                        self.cache.invalidate(match_url)
-                    else:
-                        if should_use_cached_match(cached_match):
-                            return ProcessMatchResult(
-                                match=cached_match, cache_hit=True
-                            )
+            cached_data = self.cache.get(match_url)
+            if cached_data is not None:
+                try:
+                    cached = Match.from_dict(cached_data)
+                except (TypeError, ValueError):
+                    logger.warning(f"Discarding malformed cached match for {match_url}")
+                    self.cache.invalidate(match_url)
+                else:
+                    if should_use_cached_match(cached):
+                        if upcoming_only:
+                            return ProcessMatchResult(skipped=True, cache_hit=True)
+                        return ProcessMatchResult(match=cached, cache_hit=True)
 
-            soup = await self._make_request(match_url)
+            soup = await self.http.fetch(match_url)
             if not soup:
                 return ProcessMatchResult(
-                    error=self.request_errors.get(match_url)
+                    error=self.http.errors.get(match_url)
                     or FetchError(match_url, "fetch", "Could not fetch match page")
                 )
 
             result = build_match_from_soup(soup, match_url)
-            if result.is_tbd or not result.match:
-                return result
             match = result.match
-            if upcoming_only and match.status != "upcoming":
-                return ProcessMatchResult(skipped=True)
+            if match is None:
+                return result
 
-            if self._cache_enabled and not match.is_live and not match.is_upcoming:
-                self.cache.set(match_url, asdict(match))
-            elif self._cache_enabled:
+            # Only finished matches are stable enough to cache.
+            if match.status == "completed":
+                self.cache.set(match_url, match.to_dict())
+            else:
                 self.cache.invalidate(match_url)
 
+            if upcoming_only and match.status != "upcoming":
+                return ProcessMatchResult(skipped=True)
             return result
 
         except (ValueError, TypeError, KeyError, OSError) as e:
@@ -264,74 +135,57 @@ class AsyncValorantClient(CircuitBreakerMixin):
 
 async def process_matches_async(
     client: AsyncValorantClient,
-    match_links: list[dict],
+    match_urls: list[str],
     view_mode: str = "all",
-    progress_callback=None,
+    progress_callback: Callable[[], None] | None = None,
 ) -> ProcessedMatches:
-    """Process matches concurrently using asyncio.
+    """Process matches concurrently and keep the event page's order.
+
+    Args:
+        client: An open client.
+        match_urls: Absolute match URLs.
+        view_mode: "all", "results", or "upcoming"; other statuses are skipped.
+        progress_callback: Called once per finished match.
 
     Returns:
-        ProcessedMatches where results is list of (link_dict, Match) tuples.
+        Matches plus TBD, cache, skip, and failure counts.
     """
-    results: list[tuple[dict, Match]] = []
-    tbd_count = 0
-    cache_hits = 0
-    failed_count = 0
-    skipped_count = 0
-    errors: list[FetchError] = []
-    upcoming_only = view_mode == "upcoming"
-    results_only = view_mode == "results"
+    wanted_status = VIEW_MODE_STATUS.get(view_mode)
+    processed = ProcessedMatches(results=[])
 
-    async def process_single(link: dict) -> tuple[dict, ProcessMatchResult]:
-        result = await client.process_match(link, upcoming_only)
+    async def process_single(match_url: str) -> ProcessMatchResult:
+        result = await client.process_match(match_url, wanted_status == "upcoming")
         if progress_callback:
             progress_callback()
-        return (link, result)
+        return result
 
     # gather() returns in task order, so results stay in original link order
-    tasks = [process_single(link) for link in match_links]
-    completed = await asyncio.gather(*tasks, return_exceptions=True)
+    completed = await asyncio.gather(
+        *(process_single(url) for url in match_urls), return_exceptions=True
+    )
 
-    for original_link, item in zip(match_links, completed, strict=True):
+    for match_url, item in zip(match_urls, completed, strict=True):
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
-            failed_count += 1
-            errors.append(
-                FetchError(
-                    urljoin(BASE_URL, original_link["href"]), "processing", str(item)
-                )
-            )
+            processed.failed_count += 1
+            processed.errors.append(FetchError(match_url, "processing", str(item)))
             continue
-        link, result = item
-        if result.skipped:
-            skipped_count += 1
-        elif result.is_tbd:
-            tbd_count += 1
-        elif result.match:
-            if result.cache_hit:
-                cache_hits += 1
-            if (results_only and result.match.status != "completed") or (
-                upcoming_only and result.match.status != "upcoming"
-            ):
-                skipped_count += 1
-                continue
-            results.append((link, result.match))
+        if item.cache_hit:
+            processed.cache_hits += 1
+        if item.skipped:
+            processed.skipped_count += 1
+        elif item.is_tbd:
+            processed.tbd_count += 1
+        elif item.match:
+            if wanted_status and item.match.status != wanted_status:
+                processed.skipped_count += 1
+            else:
+                processed.results.append(item.match)
         else:
-            failed_count += 1
-            errors.append(
-                result.error
-                or FetchError(
-                    urljoin(BASE_URL, link["href"]),
-                    "processing",
-                    "No match data returned",
-                )
+            processed.failed_count += 1
+            processed.errors.append(
+                item.error
+                or FetchError(match_url, "processing", "No match data returned")
             )
 
-    return ProcessedMatches(
-        results=results,
-        tbd_count=tbd_count,
-        cache_hits=cache_hits,
-        failed_count=failed_count,
-        skipped_count=skipped_count,
-        errors=errors,
-    )
+    return processed
