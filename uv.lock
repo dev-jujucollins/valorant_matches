@@ -215,18 +215,6 @@ wheels = [
 ]
 
 [[package]]
-name = "colorlog"
-version = "6.8.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/db/38/2992ff192eaa7dd5a793f8b6570d6bbe887c4fbbf7e72702eb0a693a01c8/colorlog-6.8.2.tar.gz", hash = "sha256:3e3e079a41feb5a1b64f978b5ea4f46040a94f11f0e8bbb8261e3dbbeca64d44", size = 16529, upload-time = "2024-01-26T13:59:28.628Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f3/18/3e867ab37a24fdf073c1617b9c7830e06ec270b1ea4694a624038fc40a03/colorlog-6.8.2-py3-none-any.whl", hash = "sha256:4dcbb62368e2800cb3c5abd348da7e53f6c362dda502ec27c560b2e58a66bd33", size = 11357, upload-time = "2024-01-26T13:59:27.064Z" },
-]
-
-[[package]]
 name = "coverage"
 version = "7.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -902,15 +890,6 @@ wheels = [
 ]
 
 [[package]]
-name = "python-dotenv"
-version = "1.0.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/31/06/1ef763af20d0572c032fa22882cfbfb005fba6e7300715a37840858c919e/python-dotenv-1.0.0.tar.gz", hash = "sha256:a8df96034aae6d2d50a4ebe8216326c61c3eb64836776504fcca410e5937a3ba", size = 37399, upload-time = "2023-02-24T06:46:37.282Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/2f/62ea1c8b593f4e093cc1a7768f0d46112107e790c3e478532329e434f00b/python_dotenv-1.0.0-py3-none-any.whl", hash = "sha256:f5971a9226b701070a4bf2c38c89e5a3f0d64de8debda981d1db98583009122a", size = 19482, upload-time = "2023-02-24T06:46:36.009Z" },
-]
-
-[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1057,9 +1036,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "beautifulsoup4" },
     { name = "cachetools" },
-    { name = "colorlog" },
     { name = "lxml" },
-    { name = "python-dotenv" },
     { name = "requests" },
     { name = "rich" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
@@ -1079,9 +1056,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "cachetools", specifier = ">=5.0.0" },
-    { name = "colorlog", specifier = ">=6.8.0" },
     { name = "lxml", specifier = ">=5.1.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "requests", specifier = ">=2.32.0" },
     { name = "rich", specifier = ">=13.7.0" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2026.3" },
