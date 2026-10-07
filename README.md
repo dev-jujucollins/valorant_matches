@@ -79,9 +79,12 @@ The application will display a menu of available VCT events. Use keyboard shortc
 | `f` | Filter by team |
 | `s` | Sort matches |
 | `g` | Group matches |
+| `v` | Toggle favorite-team filter |
 | `h` | Show help |
 
 Interactive team filter supports partial names and fuzzy suggestions from loaded matches.
+Display flags such as `--sort`, `--group-by`, `--team`, and `--timezone` also
+set the starting state of the menu.
 
 ### CLI Mode
 
@@ -120,7 +123,6 @@ uv run valorant-matches --list-regions          # Show discovered regions/events
 uv run valorant-matches --refresh               # Force refresh event discovery
 uv run valorant-matches --doctor                # Run diagnostics
 uv run valorant-matches --quickstart            # Show quickstart
-uv run valorant-matches --print-completion zsh  # Print shell completion
 uv run valorant-matches --interactive -r emea   # Show CLI results, then enter interactive mode
 ```
 
@@ -138,6 +140,7 @@ uv run valorant-matches config set sort date
 uv run valorant-matches config set group-by status
 uv run valorant-matches config favorite add Sentinels
 uv run valorant-matches config get
+uv run valorant-matches config set sort none   # Clear a saved choice
 ```
 
 After setting `default-region`, running `uv run valorant-matches` uses that region instead of opening interactive mode. Explicit CLI flags always override saved defaults. Use `--all`, `--no-compact`, `--cache`, `--sort none`, or `--group-by none` to temporarily clear saved choices.
@@ -197,17 +200,19 @@ When no preference was saved, `CACHE_ENABLED` supplies the default.
 valorant_matches/
 ├── src/valorant_matches/
 │   ├── cli/
-│   │   ├── app.py            # Entry point and argument parsing
-│   │   ├── display.py        # Non-interactive CLI workflows
-│   │   └── interactive.py    # Interactive menu workflows
+│   │   ├── app.py            # Entry point, argument parsing, subcommands
+│   │   ├── display.py        # CLI workflow and shared match-list helpers
+│   │   ├── interactive.py    # Interactive menu workflows
+│   │   └── options.py        # Typed run options (flags + saved defaults)
 │   ├── output/
 │   │   ├── exporters.py      # JSON/CSV export
 │   │   └── formatter.py      # Rich terminal formatting
 │   ├── scraping/
-│   │   ├── client.py         # Async match fetching
+│   │   ├── client.py         # Event match lists, cached match pages
 │   │   ├── discovery.py      # VCT event discovery
-│   │   ├── event_selection.py
-│   │   ├── matches.py        # Match parsing and models
+│   │   ├── event_selection.py # Which events a run fetches
+│   │   ├── http.py           # Shared retries, rate limit, circuit breaker
+│   │   ├── matches.py        # Match model and HTML parsing
 │   │   └── runner.py         # Sync wrapper for async fetching
 │   ├── cache.py               # File cache
 │   ├── config.py              # Environment and constants
@@ -317,13 +322,18 @@ Match start times use the source UTC timestamp. Display defaults to the local
 timezone; `--timezone` accepts an IANA name. `--today` uses that timezone's date
 and excludes matches without a known timestamp. Older markup without timestamps
 keeps its original display text; sorting falls back to its date/time text.
-JSON and CSV exports include `start_time` (ISO 8601 UTC, null/empty if unknown).
-The cache schema has changed; older cached entries are refetched automatically.
+JSON and CSV exports include `start_time` (ISO 8601 UTC, null/empty if unknown),
+`date_time` in the display timezone, `score` (null/empty before a match has one),
+and `countdown` for upcoming matches when vlr.gg shows one. When the cache schema
+changes, older cached entries are refetched automatically.
 
 Exit 0 means a successful query, including a genuinely empty schedule or filter.
 Exit 1 means discovery selection, fetching, parsing, or export failed. Partial
 results remain visible/exportable but return 1; errors include the affected URL.
-Invalid CLI arguments return 2. HTTP retries honor `Retry-After` when provided.
+Invalid CLI arguments return 2. Event discovery and match pages share one
+request policy: retries with backoff, `Retry-After`, rate limiting, and a circuit
+breaker. Requests identify themselves with a `valorant-matches/<version>`
+User-Agent.
 
 CI tests Python 3.11–3.14 on Linux, plus a Windows smoke/test job. Each job builds
 and installs the wheel into a clean environment and checks the installed CLI from
