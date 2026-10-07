@@ -13,7 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "requests>=2.32.0",
     "rich>=13.7.0",
-    "tzdata>=2026.3",
+    "tzdata>=2026.3 ; sys_platform == 'win32'",
 ]
 
 [project.scripts]
@@ -49,13 +49,12 @@ venv = ".venv"
 pythonVersion = "3.11"
 typeCheckingMode = "basic"
 include = ["src", "tests"]
-exclude = [".venv", "archived"]
+exclude = [".venv"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
 src = ["src", "tests"]
-exclude = ["archived"]
 
 [tool.ruff.lint]
 select = [
