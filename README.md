@@ -167,10 +167,11 @@ uv run valorant-matches completion install zsh
 
 ## Configuration
 
-Copy `.env.example` to `.env` to customize settings:
+Runtime settings come from environment variables:
 
 ```bash
-cp .env.example .env
+export RATE_LIMIT_DELAY=1
+export LOG_LEVEL=WARNING
 ```
 
 Available options:
@@ -179,11 +180,11 @@ Available options:
 |----------|---------|-------------|
 | `REQUEST_TIMEOUT` | 10 | HTTP request timeout in seconds |
 | `MAX_RETRIES` | 3 | Number of retry attempts for failed requests |
-| `RETRY_DELAY` | 1 | Delay between retries in seconds |
+| `RETRY_DELAY` | 1 | Base delay for exponential retry backoff, in seconds |
 | `CACHE_ENABLED` | true | Enable/disable match data caching |
-| `CACHE_TTL_SECONDS` | 3600 | Completed-match cache TTL in seconds |
+| `CACHE_TTL_SECONDS` | 604800 | Completed-match cache TTL in seconds (7 days) |
 | `RATE_LIMIT_DELAY` | 0.5 | Minimum delay between match requests |
-| `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_LEVEL` | INFO | Terminal log level (DEBUG, INFO, WARNING, ERROR) |
 | `VALORANT_MATCHES_HOME` | `~/.valorant-matches` | Runtime data directory |
 | `CACHE_DIR` | `<app home>/cache` | Optional cache-only override |
 
@@ -219,7 +220,7 @@ valorant_matches/
 │   ├── test_config.py
 │   └── test_profile.py
 ├── pyproject.toml              # Project metadata and dependencies
-└── .env.example                # Configuration template
+└── uv.lock                     # Locked dependency versions
 ```
 
 The repeated name is intentional: outer `valorant_matches/` is the repository,
@@ -258,8 +259,8 @@ Pyright, and the full pytest suite for every push and pull request. See
 
 ## Logging
 
-The application logs to the console and
-`~/.valorant-matches/valorant_matches.log` by default. Log levels:
+The application logs to stderr (through Rich, at `LOG_LEVEL`) and at DEBUG
+level to `~/.valorant-matches/valorant_matches.log`. Log levels:
 
 - DEBUG: Detailed information for debugging
 - INFO: General operational information

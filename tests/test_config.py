@@ -64,3 +64,48 @@ class TestEnvHelpers:
 
         with patch.dict(os.environ, {}, clear=True):
             assert get_env_int("NONEXISTENT_VAR", default=25) == 25
+
+
+class TestEnvFloat:
+    def test_get_env_float(self):
+        """Floats parse; invalid values fall back to the default."""
+        from valorant_matches.config import get_env_float
+
+        with patch.dict(os.environ, {"TEST_FLOAT": "0.25"}):
+            assert get_env_float("TEST_FLOAT", 1.0) == 0.25
+        with patch.dict(os.environ, {"TEST_FLOAT": "fast"}):
+            assert get_env_float("TEST_FLOAT", 1.0) == 1.0
+
+
+class TestLoggingConfig:
+    def test_logging_config_is_valid(self, tmp_path):
+        """The config applies cleanly and keeps the file handler lazy."""
+        import logging
+        import logging.config
+
+        from rich.logging import RichHandler
+
+        from valorant_matches.config import build_logging_config
+
+        config = build_logging_config()
+        config["handlers"]["file"]["filename"] = str(tmp_path / "app.log")
+        config["disable_existing_loggers"] = False
+        app_logger = logging.getLogger("valorant_matches")
+        saved = (app_logger.handlers[:], app_logger.level, app_logger.propagate)
+        try:
+            logging.config.dictConfig(config)
+            handlers = app_logger.handlers
+            assert any(isinstance(handler, RichHandler) for handler in handlers)
+            assert not (tmp_path / "app.log").exists()
+        finally:
+            for handler in app_logger.handlers:
+                handler.close()
+            app_logger.handlers, app_logger.level, app_logger.propagate = saved
+
+
+def test_user_agent_identifies_project():
+    """Requests name this tool rather than impersonating a browser."""
+    from valorant_matches.config import HEADERS, PROJECT_URL
+
+    assert HEADERS["User-Agent"].startswith("valorant-matches/")
+    assert PROJECT_URL in HEADERS["User-Agent"]

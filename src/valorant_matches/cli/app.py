@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from valorant_matches.cli.display import run_cli_mode, saved_discovery_notice
 from valorant_matches.cli.interactive import run_interactive_mode
-from valorant_matches.config import APP_DIR, CACHE_DIR, LOGGING_CONFIG
+from valorant_matches.config import APP_DIR, CACHE_DIR, build_logging_config
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.profile import UserProfile, config_manager
 from valorant_matches.scraping.discovery import (
@@ -599,7 +599,7 @@ def apply_profile_defaults(args: argparse.Namespace, profile: UserProfile) -> No
 def main() -> None:
     # Configure logging once, here — library modules only get loggers.
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    logging.config.dictConfig(LOGGING_CONFIG)
+    logging.config.dictConfig(build_logging_config())
 
     logger.info("Starting Valorant Matches application")
     args = parse_args()
