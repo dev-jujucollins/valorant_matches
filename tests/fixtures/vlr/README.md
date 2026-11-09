@@ -2,7 +2,9 @@
 
 `completed.html` is the match-header subtree fetched from
 https://www.vlr.gg/594001/ on 2026-09-09. Ads, scripts, and unrelated page
-content were omitted. Source date attributes contain UTC date strings.
+content were omitted. Source date attributes are named `data-utc-ts` but hold
+US Eastern wall time: this page pairs `04:00:00` with the rendered text
+"1:00 AM PST" (09:00 UTC).
 
 `live.html`, `upcoming.html`, `tbd.html`, and `malformed.html` are controlled
 variants of that saved header, not historical snapshots of those states.

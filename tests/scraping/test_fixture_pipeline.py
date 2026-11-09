@@ -89,7 +89,9 @@ async def test_fixture_fields() -> None:
     assert live.score == "1 : 1"
     assert upcoming.score is None and upcoming.countdown == "1d 5h"
     assert upcoming.starts_at is not None
-    assert upcoming.starts_at.isoformat() == "2025-12-09T04:00:00+00:00"
+    # The source attribute is US Eastern: 04:00 EST is 09:00 UTC, matching the
+    # "1:00 AM PST" the saved page itself displays.
+    assert upcoming.starts_at.isoformat() == "2025-12-09T09:00:00+00:00"
 
 
 @pytest.mark.parametrize("export", [False, True])
@@ -121,7 +123,7 @@ def test_fixture_cli_partial_result(
     if export:
         payload = json.loads(output.read_text())
         assert payload["count"] == 3
-        assert payload["matches"][0]["start_time"] == "2025-12-09T04:00:00+00:00"
+        assert payload["matches"][0]["start_time"] == "2025-12-09T09:00:00+00:00"
     else:
         assert "Kookje University" in text
 
@@ -146,7 +148,8 @@ async def test_empty_page_vs_http_failure(status: int) -> None:
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        ("2025-12-09 04:00:00", "2025-12-09T04:00:00+00:00"),
+        ("2025-12-09 04:00:00", "2025-12-09T09:00:00+00:00"),  # EST
+        ("2026-09-24 05:00:00", "2026-09-24T09:00:00+00:00"),  # EDT
         ("0", "1970-01-01T00:00:00+00:00"),
         ("2025-12-09T05:00:00+01:00", "2025-12-09T04:00:00+00:00"),
         ("invalid", None),
@@ -154,7 +157,7 @@ async def test_empty_page_vs_http_failure(status: int) -> None:
     ],
 )
 def test_source_timestamps(raw: str, expected: str | None) -> None:
-    """Support observed UTC attributes and tolerate malformed values."""
+    """Read Eastern date strings, UTC epochs, and explicit offsets."""
     soup = BeautifulSoup(
         f'<div class="moment-tz-convert" data-utc-ts="{raw}"></div>', "lxml"
     )
