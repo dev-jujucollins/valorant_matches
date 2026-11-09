@@ -24,6 +24,7 @@ from valorant_matches.cli.options import (
     build_run_options,
 )
 from valorant_matches.config import APP_DIR, CACHE_DIR, build_logging_config
+from valorant_matches.output.exporters import is_stdout
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.profile import UserProfile, config_manager
 from valorant_matches.scraping.discovery import (
@@ -31,6 +32,7 @@ from valorant_matches.scraping.discovery import (
     DiscoveredEvent,
     EventDiscovery,
 )
+from valorant_matches.scraping.runner import check_event_parsing
 
 logger = logging.getLogger("valorant_matches")
 
@@ -60,6 +62,7 @@ Examples:
   {CLI_COMMAND} --list-regions           # List available regions (auto-discovered)
   {CLI_COMMAND} --refresh                # Force refresh event discovery
   {CLI_COMMAND} --interactive -r americas # Fetch region, then open interactive mode
+  {CLI_COMMAND} -r emea --export json -o - | jq .count   # Export to stdout
   {CLI_COMMAND} config set default-region americas
   {CLI_COMMAND} completion install zsh
 
@@ -227,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         "-o",
-        help="Output file path for export (default: matches.{format})",
+        help="Output file path for export, or - for stdout (default: matches.{format})",
     )
     parser.add_argument("--team", help="Filter matches by team name (case-insensitive)")
     parser.add_argument(
@@ -242,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--doctor",
         action="store_true",
-        help="Run diagnostics for network, cache, and event discovery",
+        help="Run diagnostics for network, cache, event discovery, and parsing",
     )
     parser.add_argument(
         "--quickstart", action="store_true", help="Show a quickstart guide and exit"
@@ -526,6 +529,37 @@ def print_quickstart(formatter: Formatter) -> None:
     formatter.blank()
 
 
+def _doctor_event(events: list[DiscoveredEvent]) -> DiscoveredEvent:
+    """Pick the event most likely to have matches listed: newest ongoing first."""
+    for status in ("ongoing", "completed", "upcoming"):
+        candidates = [event for event in events if event.status == status]
+        if candidates:
+            return candidates[-1]
+    return events[-1]
+
+
+def _run_parser_check(formatter: Formatter, events: list[DiscoveredEvent]) -> bool:
+    """Parse one live event listing and match page; return True when it works."""
+    event = _doctor_event(events)
+    check = check_event_parsing(event.url, event.slug)
+    if not check.problems:
+        formatter.success(
+            f"✓ Parser check: read {check.detailed}/{check.rows} listing rows"
+            + (" and a match page" if check.sample_url else "")
+            + f" ({event.name})"
+        )
+        return True
+    logger.warning(f"Doctor parser check failed for {event.url}: {check.problems}")
+    formatter.error(f"✗ Parser check failed ({event.name})")
+    for problem in check.problems:
+        formatter.muted(f"  {problem}")
+    formatter.muted(f"  Event: {event.url}")
+    if check.sample_url:
+        formatter.muted(f"  Match: {check.sample_url}")
+    formatter.muted("  vlr.gg may have changed its page markup.")
+    return False
+
+
 def run_doctor(formatter: Formatter, discovery: EventDiscovery) -> int:
     """Run diagnostics and print actionable results.
 
@@ -566,6 +600,8 @@ def run_doctor(formatter: Formatter, discovery: EventDiscovery) -> int:
     events = discovery.discover_events(force_refresh=True)
     if events:
         formatter.success(f"✓ Event discovery: found {len(events)} active events")
+        if not _run_parser_check(formatter, events):
+            failures += 1
     else:
         failures += 1
         formatter.warning("! Event discovery returned no live events")
@@ -694,7 +730,10 @@ def main() -> None:
     logging.config.dictConfig(build_logging_config())
     logger.info("Starting Valorant Matches application")
 
-    exit_code = run(parse_args(), Formatter())
+    args = parse_args()
+    # Exporting to stdout: keep it clean by sending everything else to stderr.
+    data_on_stdout = bool(args.export) and is_stdout(args.output)
+    exit_code = run(args, Formatter(stderr=data_on_stdout))
     logger.info("Application shutdown complete")
     sys.exit(exit_code)
 

@@ -18,9 +18,8 @@ async def match_urls_for(html: str) -> list[str]:
         new_callable=AsyncMock,
         return_value=BeautifulSoup(html, "html.parser"),
     ):
-        return await AsyncValorantClient(cache_enabled=False).fetch_event_match_urls(
-            EVENT_URL
-        )
+        client = AsyncValorantClient(cache_enabled=False)
+        return [row.url for row in await client.fetch_event_listing(EVENT_URL)]
 
 
 class TestSlugMatching:
@@ -59,4 +58,4 @@ class TestSlugMatching:
             HttpFetcher, "fetch", new_callable=AsyncMock, return_value=None
         ):
             client = AsyncValorantClient(cache_enabled=False)
-            assert await client.fetch_event_match_urls(EVENT_URL) == []
+            assert await client.fetch_event_listing(EVENT_URL) == []

@@ -20,6 +20,10 @@ logger = logging.getLogger("valorant_matches")
 # Cache TTL for discovered events (24 hours)
 EVENT_CACHE_TTL = 86400
 
+# A saved event list this recent is used without asking vlr.gg again. Event
+# lists change a few times a season; --refresh always asks.
+SNAPSHOT_FRESH_SECONDS = 3600
+
 # VLR's VCT tier covers current and older seasons without a yearly series ID.
 VCT_EVENTS_URL = f"{BASE_URL}/events/?tier=60"
 
@@ -157,6 +161,20 @@ class EventDiscovery:
             return None
         return self._events
 
+    def _recent_snapshot(self) -> list[DiscoveredEvent] | None:
+        """Return the saved event list when it is recent enough to trust."""
+        saved = self._load_snapshot()
+        if not saved or self.last_updated is None:
+            return None
+        age = time.time() - self.last_updated
+        if not 0 <= age < SNAPSHOT_FRESH_SECONDS:
+            return None
+        self._events = saved
+        # Backdate so the in-process copy expires with the snapshot's real age.
+        self._events_fetched_at = time.monotonic() - age
+        self.is_stale = False
+        return saved
+
     def can_reach_vlr(self) -> bool:
         """Check if vlr.gg is reachable using normal discovery request settings."""
         return self._fetch(BASE_URL) is not None
@@ -222,6 +240,11 @@ class EventDiscovery:
         if cached is not None:
             logger.debug("Using cached event list")
             return cached
+        if not force_refresh:
+            recent = self._recent_snapshot()
+            if recent is not None:
+                logger.debug("Using recent saved event list")
+                return recent
 
         logger.info("Discovering VCT events from vlr.gg")
         events = []

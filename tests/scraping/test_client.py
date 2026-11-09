@@ -10,6 +10,7 @@ from valorant_matches.scraping.client import AsyncValorantClient, process_matche
 from valorant_matches.scraping.http import HttpFetcher
 from valorant_matches.scraping.matches import (
     FetchError,
+    ListingRow,
     Match,
     MatchStatus,
     ProcessMatchResult,
@@ -34,6 +35,24 @@ def make_result(url: str, status: MatchStatus = "completed") -> ProcessMatchResu
 
 
 URL = "https://vlr.gg/123/match"
+
+
+def cache_entry(match: Match, schedule: str = "") -> dict:
+    """Build a cache record as the client stores it."""
+    return {"match": match.to_dict(), "schedule": schedule}
+
+
+def listed(status: MatchStatus, schedule: str = "Thu, May 1 | 2:00 PM") -> ListingRow:
+    """Build a readable listing row for URL."""
+    return ListingRow(
+        url=URL,
+        team1="Team A",
+        team2="Team B",
+        status=status,
+        score=None if status == "upcoming" else "1 : 0",
+        countdown="2h 5m" if status == "upcoming" else None,
+        schedule=schedule,
+    )
 
 
 class TestClientCacheControl:
@@ -71,21 +90,61 @@ class TestProcessMatch:
             patch("valorant_matches.scraping.client.MatchCache") as cache,
             patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch,
         ):
-            cache.return_value.get.return_value = cached.to_dict()
+            cache.return_value.get.return_value = cache_entry(cached)
             result = await AsyncValorantClient().process_match(URL)
         assert result.match == cached
         assert result.cache_hit
         fetch.assert_not_awaited()
 
-    async def test_cached_match_skipped_in_upcoming_view(self) -> None:
-        """A cached completed match is known not to be upcoming."""
+    async def test_listing_refreshes_cached_match_without_request(self) -> None:
+        """Status and score come from the listing; the start time from cache."""
+        row = listed("live")
+        cached = make_match(URL, "upcoming")
         with (
             patch("valorant_matches.scraping.client.MatchCache") as cache,
             patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch,
         ):
-            cache.return_value.get.return_value = make_match(URL).to_dict()
-            result = await AsyncValorantClient().process_match(URL, upcoming_only=True)
-        assert result.skipped and result.cache_hit
+            cache.return_value.get.return_value = cache_entry(cached, row.schedule)
+            result = await AsyncValorantClient().process_match(row)
+        assert result.cache_hit and result.match is not None
+        assert (result.match.status, result.match.score) == ("live", "1 : 0")
+        assert result.match.starts_at == cached.starts_at
+        fetch.assert_not_awaited()
+
+    async def test_rescheduled_match_is_refetched_and_recached(self) -> None:
+        """A changed listing date or time means the cached start is stale."""
+        row = listed("upcoming", schedule="Fri, May 2 | 4:00 PM")
+        fresh = make_result(URL, "upcoming")
+        with (
+            patch("valorant_matches.scraping.client.MatchCache") as cache,
+            patch.object(
+                HttpFetcher,
+                "fetch",
+                new_callable=AsyncMock,
+                return_value=BeautifulSoup("<html></html>", "lxml"),
+            ) as fetch,
+            patch(
+                "valorant_matches.scraping.client.build_match_from_soup",
+                return_value=fresh,
+            ),
+        ):
+            cache.return_value.get.return_value = cache_entry(
+                make_match(URL, "upcoming"), "Thu, May 1 | 2:00 PM"
+            )
+            result = await AsyncValorantClient().process_match(row)
+        assert not result.cache_hit
+        assert fetch.await_count == 1
+        assert fresh.match is not None
+        cache.return_value.set.assert_called_once_with(
+            URL, cache_entry(fresh.match, row.schedule)
+        )
+
+    async def test_listed_tbd_match_needs_no_request(self) -> None:
+        """Undecided teams are known from the listing alone."""
+        row = ListingRow(url=URL, team1="TBD", team2="Team B", status="upcoming")
+        with patch.object(HttpFetcher, "fetch", new_callable=AsyncMock) as fetch:
+            result = await AsyncValorantClient(cache_enabled=False).process_match(row)
+        assert result.is_tbd
         fetch.assert_not_awaited()
 
     async def test_malformed_cached_match_refetches(self) -> None:
@@ -110,7 +169,7 @@ class TestProcessMatch:
         assert result.match == fresh_match
         assert fetch.await_count == 1
         cache.return_value.invalidate.assert_called_once_with(URL)
-        cache.return_value.set.assert_called_once_with(URL, fresh_match.to_dict())
+        cache.return_value.set.assert_called_once_with(URL, cache_entry(fresh_match))
 
     async def test_unfinished_match_is_not_cached(self) -> None:
         """Live and upcoming results clear any cached copy instead."""
@@ -145,6 +204,14 @@ class TestProcessMatch:
 
 class TestProcessMatchesAsync:
     """Tests for process_matches_async."""
+
+    async def test_listing_status_filters_before_any_lookup(self) -> None:
+        """A row the view does not want is skipped without cache or request."""
+        client = AsyncValorantClient(cache_enabled=False)
+        client.process_match = AsyncMock()  # type: ignore[method-assign]
+        processed = await process_matches_async(client, [listed("upcoming")], "results")
+        assert processed.skipped_count == 1 and processed.results == []
+        client.process_match.assert_not_awaited()
 
     async def test_empty_match_urls(self) -> None:
         """No URLs produce an empty result."""

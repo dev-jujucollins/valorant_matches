@@ -78,7 +78,7 @@ def build_logging_config() -> dict[str, Any]:
                 "console": Console(stderr=True),
                 "show_path": False,
                 "formatter": "console",
-                "level": os.getenv("LOG_LEVEL", "INFO"),
+                "level": os.getenv("LOG_LEVEL", "WARNING"),
             },
             "file": {
                 "class": "logging.FileHandler",
@@ -113,8 +113,8 @@ REQUEST_TIMEOUT = get_env_int("REQUEST_TIMEOUT", 10)
 MAX_RETRIES = get_env_int("MAX_RETRIES", 3)
 RETRY_DELAY = get_env_int("RETRY_DELAY", 1)
 
-# Cache settings. Only completed matches are cached and their results do not
-# change, so entries can live for a week.
+# Cache settings. Cached matches are refreshed from the event listing on every
+# run and refetched when rescheduled, so entries can live for a week.
 CACHE_ENABLED = get_env_bool("CACHE_ENABLED", True)
 CACHE_TTL_SECONDS = get_env_int("CACHE_TTL_SECONDS", 7 * 24 * 60 * 60)
 CACHE_DIR = Path(os.getenv("CACHE_DIR", APP_DIR / "cache"))

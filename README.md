@@ -11,14 +11,13 @@ A Python application that fetches and displays match results from the Valorant C
 - **Export**: Save matches to JSON or CSV format
 - **Team filtering**: Filter matches by team name, with fuzzy suggestions in interactive mode
 - **Interactive mode**: Keyboard shortcuts for quick navigation
-- **Caching**: Match data cached locally with configurable TTL
+- **Fast repeat runs**: one request per event once match start times are cached
 - **Auto-discovery**: Automatically discovers current VCT events from vlr.gg
 - **Diagnostics**: Built-in doctor mode for connectivity, cache, and discovery checks
 - **Saved defaults**: Configure default region, view, sorting, grouping, compact mode, cache, and favorite teams
 - **Personal schedule**: Show favorite-team matches across regions with `--favorites`
 - **Season and event selection**: Choose a VCT season or discovered event ID
 - **Shell completion**: Print or install completion scripts for bash, zsh, and fish
-- Async/concurrent match processing for faster results
 - Beautiful terminal output with Rich formatting
 - **Resilient web scraping** with fallback CSS selectors
 - **Configurable** via environment variables
@@ -52,7 +51,15 @@ cd valorant_matches
 uv sync
 ```
 
-No manual activation is required. Run commands through uv. The installed CLI
+To install the `valorant-matches` command without cloning, use uv's tool
+install instead and drop the `uv run` prefix from the examples below:
+
+```bash
+uv tool install git+https://github.com/dev-jujucollins/valorant_matches
+valorant-matches -r americas
+```
+
+In a clone, no manual activation is required. Run commands through uv. The installed CLI
 entry point is `valorant_matches.cli.app:main`; direct module execution is also
 available:
 
@@ -83,6 +90,8 @@ The application will display a menu of available VCT events. Use keyboard shortc
 | `h` | Show help |
 
 Interactive team filter supports partial names and fuzzy suggestions from loaded matches.
+Once an event is on screen, `f`, `s`, `g`, and `v` redraw it immediately from
+the matches already loaded; nothing is fetched again.
 Display flags such as `--sort`, `--group-by`, `--team`, and `--timezone` also
 set the starting state of the menu.
 
@@ -115,13 +124,14 @@ uv run valorant-matches --event 2766                # ID shown by --list-regions
 # Export matches
 uv run valorant-matches -r americas --export json                    # Export to matches.json
 uv run valorant-matches -r americas --export csv --output results.csv  # Custom filename
+uv run valorant-matches -r americas --export json -o - | jq '.matches[].team1'  # To stdout
 
 # Other options
 uv run valorant-matches --clear-cache           # Clear cached data
 uv run valorant-matches --no-cache              # Disable caching for this run
 uv run valorant-matches --list-regions          # Show discovered regions/events
 uv run valorant-matches --refresh               # Force refresh event discovery
-uv run valorant-matches --doctor                # Run diagnostics
+uv run valorant-matches --doctor                # Run diagnostics, including a live parse
 uv run valorant-matches --quickstart            # Show quickstart
 uv run valorant-matches --interactive -r emea   # Show CLI results, then enter interactive mode
 ```
@@ -185,9 +195,9 @@ Available options:
 | `MAX_RETRIES` | 3 | Number of retry attempts for failed requests |
 | `RETRY_DELAY` | 1 | Base delay for exponential retry backoff, in seconds |
 | `CACHE_ENABLED` | true | Enable/disable match data caching |
-| `CACHE_TTL_SECONDS` | 604800 | Completed-match cache TTL in seconds (7 days) |
+| `CACHE_TTL_SECONDS` | 604800 | Match cache TTL in seconds (7 days) |
 | `RATE_LIMIT_DELAY` | 0.5 | Minimum delay between match requests |
-| `LOG_LEVEL` | INFO | Terminal log level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_LEVEL` | WARNING | Terminal log level (DEBUG, INFO, WARNING, ERROR) |
 | `VALORANT_MATCHES_HOME` | `~/.valorant-matches` | Runtime data directory |
 | `CACHE_DIR` | `<app home>/cache` | Optional cache-only override |
 
@@ -208,12 +218,12 @@ valorant_matches/
 │   │   ├── exporters.py      # JSON/CSV export
 │   │   └── formatter.py      # Rich terminal formatting
 │   ├── scraping/
-│   │   ├── client.py         # Event match lists, cached match pages
+│   │   ├── client.py         # Event listings, cached match pages
 │   │   ├── discovery.py      # VCT event discovery
 │   │   ├── event_selection.py # Which events a run fetches
 │   │   ├── http.py           # Shared retries, rate limit, circuit breaker
 │   │   ├── matches.py        # Match model and HTML parsing
-│   │   └── runner.py         # Sync wrapper for async fetching
+│   │   └── runner.py         # Sync wrappers: event fetch, live parser check
 │   ├── cache.py               # File cache
 │   ├── config.py              # Environment and constants
 │   └── profile.py             # Saved user defaults
@@ -262,10 +272,16 @@ GitHub Actions runs locked dependency sync, Ruff formatting and lint checks,
 Pyright, and the full pytest suite for every push and pull request. See
 `.github/workflows/ci.yml`.
 
+Those tests never touch the network, so they cannot notice vlr.gg changing its
+markup. `.github/workflows/live-check.yml` covers that: once a day (and on
+demand from the Actions tab) it runs `valorant-matches --doctor` against the
+real site, which parses one live event listing and one match page and fails
+when either cannot be read.
+
 ## Logging
 
-The application logs to stderr (through Rich, at `LOG_LEVEL`) and at DEBUG
-level to `~/.valorant-matches/valorant_matches.log`. Log levels:
+The application logs warnings and errors to stderr (through Rich; set
+`LOG_LEVEL` for more) and everything at DEBUG level to `~/.valorant-matches/valorant_matches.log`. Log levels:
 
 - DEBUG: Detailed information for debugging
 - INFO: General operational information
@@ -300,11 +316,24 @@ uv run valorant-matches -r emea --today --timezone America/Los_Angeles
 uv run valorant-matches -r champions --sort date --timezone UTC
 ```
 
-`--watch` refreshes until Ctrl+C (exit 130), shows score/status changes and the
-last fully successful update, and retries after incomplete refreshes. The interval
-is a delay **after** each fetch finishes (default 60 seconds, minimum 10).
-Existing request rate limiting and completed-match caching still apply; use
-`--no-cache` for fresh completed scores too. Watch requires a region, event ID,
+`--watch` refreshes until Ctrl+C (exit 130) and retries after incomplete
+refreshes. In a terminal each refresh redraws the screen in place, and the last
+ten score/status changes stay listed above the matches with the time they were
+seen. The interval is a delay **after** each fetch finishes (default 60
+seconds, minimum 10). A refresh is normally one request per event.
+
+## How fetching works
+
+An event's matches page lists every match with its teams, score, and status, so
+that page alone answers most questions. It has no usable start time (its clock
+text is rendered in the viewer's timezone), so each match page is fetched once
+for the start time and cached. After that a run costs one request per event:
+status, score, and countdown come from the listing, and a match is refetched
+only when its listed date or time changes. The first run on an event still
+fetches every match page, spaced by `RATE_LIMIT_DELAY`. `--results` and
+`--upcoming` skip the pages of matches the listing shows they do not want.
+`--no-cache` fetches every match page again. If vlr.gg changes the listing
+markup, rows fall back to their match pages, and `--doctor` reports it. Watch requires a region, event ID,
 favorite-team schedule, or saved default-region and cannot combine with export
 or interactive mode.
 
@@ -318,13 +347,15 @@ Discovery reads VLR's VCT event listing for the current year by default.
 `--event ID`. Last successful discovery is saved under the app data directory
 for outages. Output reports its timestamp when that snapshot is used.
 
-Match start times use the source UTC timestamp. Display defaults to the local
+Match start times use the match page's timestamp, which vlr.gg stores as US
+Eastern time and the app converts to UTC. Display defaults to the local
 timezone; `--timezone` accepts an IANA name. `--today` uses that timezone's date
 and excludes matches without a known timestamp. Older markup without timestamps
 keeps its original display text; sorting falls back to its date/time text.
 JSON and CSV exports include `start_time` (ISO 8601 UTC, null/empty if unknown),
 `date_time` in the display timezone, `score` (null/empty before a match has one),
-and `countdown` for upcoming matches when vlr.gg shows one. When the cache schema
+and `countdown` for upcoming matches when vlr.gg shows one. `--output -` writes
+the export to stdout and moves all other output to stderr. When the cache schema
 changes, older cached entries are refetched automatically.
 
 Exit 0 means a successful query, including a genuinely empty schedule or filter.

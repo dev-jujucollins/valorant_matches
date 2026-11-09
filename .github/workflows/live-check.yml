@@ -1,0 +1,53 @@
+name: Live site check
+
+# The test suite uses saved HTML, so it cannot notice vlr.gg changing its
+# markup. This job runs the CLI's own diagnostics against the real site.
+# A failed scheduled run emails the repository owner by default.
+
+on:
+  schedule:
+    - cron: "17 14 * * *" # daily, 14:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-check
+  cancel-in-progress: true
+
+jobs:
+  doctor:
+    name: Parse live vlr.gg pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      LOG_LEVEL: INFO
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.29"
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Set runtime data directory
+        run: echo "VALORANT_MATCHES_HOME=$RUNNER_TEMP/valorant-matches" >> "$GITHUB_ENV"
+
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev
+
+      - name: Run diagnostics against vlr.gg
+        run: uv run --no-dev valorant-matches --doctor
+
+      - name: Upload debug log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valorant-matches-log
+          path: ${{ runner.temp }}/valorant-matches/valorant_matches.log
+          if-no-files-found: ignore

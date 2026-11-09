@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from bs4 import BeautifulSoup
 
-from valorant_matches.cli.app import parse_args
+from valorant_matches.cli.app import main, parse_args
 from valorant_matches.cli.display import filter_today, run_cli_mode
 from valorant_matches.cli.options import build_run_options
 from valorant_matches.output.formatter import Formatter
@@ -128,6 +128,37 @@ def test_fixture_cli_partial_result(
         assert "Kookje University" in text
 
 
+def test_export_to_stdout_keeps_stdout_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--export json -o -` puts only JSON on stdout; messages go to stderr."""
+    event = SimpleNamespace(
+        event_id="1",
+        name="Fixture event",
+        url="https://vlr.gg/event/matches/1/fixture-event/",
+        slug="fixture-event",
+        status="ongoing",
+    )
+    argv = ["valorant-matches", "-r", "americas", "--no-cache"]
+    with (
+        patch("sys.argv", [*argv, "--export", "json", "-o", "-"]),
+        patch("valorant_matches.cli.app.APP_DIR", tmp_path),
+        patch(
+            "valorant_matches.cli.app.build_logging_config", return_value={"version": 1}
+        ),
+        patch("valorant_matches.cli.display.select_events", return_value=[event]),
+        patch("aiohttp.ClientSession.get", side_effect=fixture_get),
+        no_rate_limit(),
+        pytest.raises(SystemExit) as exit_info,
+    ):
+        main()
+    assert exit_info.value.code == 1  # The malformed fixture page still fails.
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["count"] == 3
+    assert "Exported 3 matches to standard output" in captured.err
+    assert "missing team names" in captured.err
+
+
 @pytest.mark.parametrize("status", [200, 404])
 async def test_empty_page_vs_http_failure(status: int) -> None:
     """An empty successful response differs from an HTTP failure."""
@@ -209,7 +240,10 @@ async def test_champions_rejects_previously_miscached_score() -> None:
         score="TBD –",
     )
     with patch("valorant_matches.scraping.client.MatchCache") as cache:
-        cache.return_value.get.return_value = stale.to_dict()
+        cache.return_value.get.return_value = {
+            "match": stale.to_dict(),
+            "schedule": "",
+        }
         async with AsyncValorantClient() as client:
             with patch(
                 "aiohttp.ClientSession.get",

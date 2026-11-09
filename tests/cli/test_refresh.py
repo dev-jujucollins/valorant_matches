@@ -167,6 +167,21 @@ def test_watch_changes_and_recovers(capsys: pytest.CaptureFixture[str]) -> None:
     assert all(call.args == (15,) for call in sleep.call_args_list)
 
 
+def test_watch_keeps_recent_changes_listed(capsys: pytest.CaptureFixture[str]) -> None:
+    """A change stays visible on later refreshes, since the screen is redrawn."""
+    first = match_at()
+    second = replace(first, score="2-0")
+    run(
+        opts_for("--watch"),
+        [ok(first), ok(second), ok(second)],
+        [None, None, KeyboardInterrupt],
+    )
+    output = capsys.readouterr().out
+    assert output.count("Changed: Alpha vs Beta: 1-0 (live) → 2-0 (live)") == 2
+    assert "Fetching matches for" not in output
+    assert "Refreshing every 60s" in output
+
+
 def test_watch_ignores_countdown_ticks(capsys: pytest.CaptureFixture[str]) -> None:
     """A countdown changing between refreshes is not reported as a change."""
     first = replace(match_at(), status="upcoming", score=None, countdown="1h 5m")
