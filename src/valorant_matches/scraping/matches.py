@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, tzinfo
 from typing import Any, Literal, get_args
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
@@ -53,6 +54,10 @@ DATE_SELECTORS = [
 
 MatchStatus = Literal["live", "upcoming", "completed"]
 MATCH_STATUSES: tuple[MatchStatus, ...] = get_args(MatchStatus)
+
+# VLR's "data-utc-ts" attribute holds US Eastern wall time, not UTC: a match
+# the site renders as "2:00 AM PDT" carries "05:00:00" there.
+SOURCE_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def _parse_aware_datetime(raw: str) -> datetime:
@@ -298,7 +303,10 @@ def extract_date_time(soup: BeautifulSoup) -> tuple[str, str]:
 
 
 def extract_start_time(soup: BeautifulSoup) -> datetime | None:
-    """Read VLR UTC date strings or Unix timestamps as aware UTC datetimes.
+    """Read VLR date strings or Unix timestamps as aware UTC datetimes.
+
+    Date strings without an offset are US Eastern wall time (see
+    SOURCE_TIMEZONE); Unix timestamps are UTC by definition.
 
     Args:
         soup: Parsed match page.
@@ -317,7 +325,7 @@ def extract_start_time(soup: BeautifulSoup) -> datetime | None:
             except ValueError:
                 return datetime.fromtimestamp(float(raw), UTC)
             if value.tzinfo is None:
-                value = value.replace(tzinfo=UTC)
+                value = value.replace(tzinfo=SOURCE_TIMEZONE)
             return value.astimezone(UTC)
         except (ValueError, OverflowError, OSError):
             continue
