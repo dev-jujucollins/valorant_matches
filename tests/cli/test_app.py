@@ -21,6 +21,7 @@ from valorant_matches.cli.app import (
 )
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.profile import ConfigManager, UserProfile
+from valorant_matches.scraping.runner import ParserCheck
 
 
 @pytest.fixture
@@ -191,6 +192,9 @@ class TestConfigCommand:
         assert not manager.config_path.exists()
 
 
+PARSER_CHECK = "valorant_matches.cli.app.check_event_parsing"
+
+
 class TestDoctor:
     """Tests for diagnostic mode."""
 
@@ -198,10 +202,33 @@ class TestDoctor:
         """Doctor reuses discovery for connectivity and reports success."""
         discovery = Mock()
         discovery.can_reach_vlr.return_value = True
-        discovery.discover_events.return_value = [Mock()]
-        assert run_doctor(Formatter(), discovery) == 0
+        event = Mock(url="https://vlr.gg/e", slug="e")
+        discovery.discover_events.return_value = [event]
+        parsed = ParserCheck(rows=3, detailed=3, sample_url="https://vlr.gg/1")
+        with patch(PARSER_CHECK, return_value=parsed) as check:
+            assert run_doctor(Formatter(), discovery) == 0
         discovery.can_reach_vlr.assert_called_once_with()
-        assert "Diagnostics passed" in capsys.readouterr().out
+        check.assert_called_once_with("https://vlr.gg/e", "e")
+        output = capsys.readouterr().out
+        assert "read 3/3 listing rows and a match page" in output
+        assert "Diagnostics passed" in output
+
+    def test_parser_problems_fail_the_run(self, capsys) -> None:
+        """Unreadable live markup is a failure with the affected URLs."""
+        discovery = Mock()
+        discovery.can_reach_vlr.return_value = True
+        discovery.discover_events.return_value = [
+            Mock(url="https://vlr.gg/old", slug="old", status="completed"),
+            Mock(url="https://vlr.gg/now", slug="now", status="ongoing"),
+        ]
+        broken = ParserCheck(rows=3, problems=["Listing rows could not be read"])
+        with patch(PARSER_CHECK, return_value=broken) as check:
+            assert run_doctor(Formatter(), discovery) == 1
+        check.assert_called_once_with("https://vlr.gg/now", "now")
+        output = capsys.readouterr().out
+        assert "Parser check failed" in output
+        assert "Listing rows could not be read" in output
+        assert "1 issue(s)" in output
 
     def test_failures_are_counted(self, tmp_path: Path, capsys) -> None:
         """Each failed check is reported with guidance."""

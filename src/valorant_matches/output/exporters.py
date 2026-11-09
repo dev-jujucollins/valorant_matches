@@ -3,13 +3,38 @@
 import csv
 import json
 import logging
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, tzinfo
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from valorant_matches.scraping.matches import Match
 
 logger = logging.getLogger("valorant_matches")
+
+# Output path that means "write to standard output".
+STDOUT_PATH = "-"
+
+
+def is_stdout(output_path: str | Path | None) -> bool:
+    """Return True when an export path means standard output."""
+    return str(output_path) == STDOUT_PATH
+
+
+@contextmanager
+def _open_output(output_path: str | Path) -> Iterator[TextIO]:
+    """Open an export target: standard output for "-", else a UTF-8 file."""
+    if is_stdout(output_path):
+        yield sys.stdout
+        sys.stdout.flush()
+        return
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        yield handle
+
 
 EXPORT_FIELDS = [
     "date_time",
@@ -55,7 +80,7 @@ def export_json(
 
     Args:
         matches: Matches to export.
-        output_path: Path to output file.
+        output_path: Path to output file, or "-" for standard output.
         zone: Timezone for date_time values.
 
     Returns:
@@ -63,11 +88,9 @@ def export_json(
     """
     rows = [match_to_dict(match, zone) for match in matches]
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps({"matches": rows, "count": len(rows)}, indent=2), encoding="utf-8"
-    )
+    with _open_output(output_path) as handle:
+        json.dump({"matches": rows, "count": len(rows)}, handle, indent=2)
+        handle.write("\n")
 
     logger.info(f"Exported {len(rows)} matches to {output_path}")
     return len(rows)
@@ -80,17 +103,16 @@ def export_csv(
 
     Args:
         matches: Matches to export.
-        output_path: Path to output file.
+        output_path: Path to output file, or "-" for standard output.
         zone: Timezone for date_time values.
 
     Returns:
         Number of matches exported.
     """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(output_path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=EXPORT_FIELDS)
+    # Standard output is already a text stream that translates newlines.
+    terminator = "\n" if is_stdout(output_path) else "\r\n"
+    with _open_output(output_path) as f:
+        writer = csv.DictWriter(f, fieldnames=EXPORT_FIELDS, lineterminator=terminator)
         writer.writeheader()
         writer.writerows(match_to_dict(match, zone) for match in matches)
 
@@ -109,7 +131,8 @@ def export_matches(
     Args:
         matches: Matches to export.
         export_format: "json" or "csv".
-        output_path: Output file; defaults to matches.<format>.
+        output_path: Output file, or "-" for standard output; defaults to
+            matches.<format>.
         zone: Timezone for date_time values.
 
     Returns:

@@ -1,4 +1,4 @@
-# Two-tier (memory + disk) cache for completed match data.
+# Two-tier (memory + disk) cache for match data.
 import hashlib
 import json
 import logging
@@ -18,7 +18,7 @@ MEMORY_CACHE_SIZE = 100
 
 # Bump when the cached Match payload shape changes; mismatched entries are
 # discarded instead of failing to rebuild a Match.
-CACHE_SCHEMA_VERSION = 4
+CACHE_SCHEMA_VERSION = 5
 
 
 class MatchCache:

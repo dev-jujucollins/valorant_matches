@@ -97,3 +97,23 @@ class TestExport:
         monkeypatch.chdir(tmp_path)
         export_matches([make_match()], "json")
         assert (tmp_path / "matches.json").exists()
+
+
+@pytest.mark.parametrize("export_format", ["json", "csv"])
+def test_dash_exports_to_stdout(
+    export_format: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An output path of "-" writes the data to stdout and creates no file."""
+    monkeypatch.chdir(tmp_path)
+    assert export_matches([BASE_MATCH], export_format, "-") == 1
+    output = capsys.readouterr().out
+    if export_format == "json":
+        assert json.loads(output)["matches"][0]["team1"] == "Sentinels"
+    else:
+        rows = list(csv.DictReader(output.splitlines()))
+        assert rows[0]["team2"] == "Cloud9"
+        assert "\r" not in output
+    assert not list(tmp_path.iterdir())

@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -128,7 +128,12 @@ def test_uses_options_for_display_and_cache(capsys) -> None:
     )
     assert code == 0
     fetch.assert_called_once_with(
-        EVENT.url, EVENT.slug, view_mode="upcoming", cache_enabled=False
+        EVENT.url,
+        EVENT.slug,
+        view_mode="upcoming",
+        cache_enabled=False,
+        show_progress=True,
+        console=ANY,
     )
     output = capsys.readouterr().out
     assert "January 01, 2026 | ★ Sentinels vs Cloud9" in output
@@ -144,6 +149,21 @@ def test_team_filter_with_suggestions(capsys) -> None:
     assert "No matches found for team filter: Sentinal" in output
     assert "Try one of: Sentinels" in output
     assert "Active: team=Sentinal" in output
+
+
+def test_filter_change_redraws_loaded_event_without_refetching(capsys) -> None:
+    """After an event is loaded, f/s/g/v apply at once from memory."""
+    result = fetched(
+        make_match("Sentinels", "Cloud9"),
+        make_match("LOUD", "NRG", "https://vlr.gg/2"),
+    )
+    _, fetch = run_with_inputs(["1", "1", "f", "nrg", "q"], result)
+    assert fetch.call_count == 1
+    output = capsys.readouterr().out
+    redrawn = output.split("already loaded", 1)[1]
+    assert "LOUD vs NRG" in redrawn
+    assert "Sentinels" not in redrawn
+    assert "pick an event number" not in output
 
 
 def test_clear_team_filter(capsys) -> None:

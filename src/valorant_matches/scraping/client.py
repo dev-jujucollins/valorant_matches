@@ -1,9 +1,10 @@
-# Async match client: event match lists, cached match pages, and batching.
+# Async match client: event listings, cached match pages, and batching.
 
 import asyncio
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 from types import TracebackType
 
 from valorant_matches.cache import MatchCache
@@ -11,12 +12,13 @@ from valorant_matches.config import CACHE_ENABLED
 from valorant_matches.scraping.http import HttpFetcher
 from valorant_matches.scraping.matches import (
     FetchError,
+    ListingRow,
     Match,
     ProcessedMatches,
     ProcessMatchResult,
     build_match_from_soup,
     extract_event_slug,
-    find_event_match_urls,
+    parse_event_listing,
     should_use_cached_match,
 )
 
@@ -27,7 +29,12 @@ VIEW_MODE_STATUS = {"all": None, "results": "completed", "upcoming": "upcoming"}
 
 
 class AsyncValorantClient:
-    """Fetch event and match pages, reading and writing the match cache."""
+    """Fetch event and match pages, reading and writing the match cache.
+
+    The event listing supplies teams, score, and status for every match. A
+    match page is only fetched for what the listing lacks, the start time, and
+    the result is cached until the listing shows the match was rescheduled.
+    """
 
     def __init__(
         self, cache_enabled: bool | None = None, http: HttpFetcher | None = None
@@ -51,17 +58,17 @@ class AsyncValorantClient:
         """Close the underlying HTTP session."""
         await self.http.__aexit__(exc_type, exc_val, exc_tb)
 
-    async def fetch_event_match_urls(
+    async def fetch_event_listing(
         self, event_url: str, event_slug: str | None = None
-    ) -> list[str]:
-        """Fetch the match URLs listed on an event's matches page.
+    ) -> list[ListingRow]:
+        """Fetch the match rows listed on an event's matches page.
 
         Args:
             event_url: Event matches page URL.
             event_slug: Slug that match links must contain; derived when omitted.
 
         Returns:
-            Absolute match URLs, or an empty list when the page failed.
+            Listing rows in page order, or an empty list when the page failed.
         """
         logger.info(f"Fetching matches for event: {event_url}")
         soup = await self.http.fetch(event_url)
@@ -74,68 +81,93 @@ class AsyncValorantClient:
             if event_slug
             else None
         )
-        match_urls = find_event_match_urls(soup, slug_pattern)
-        logger.info(f"Found {len(match_urls)} match links")
-        return match_urls
+        rows = parse_event_listing(soup, slug_pattern)
+        detailed = sum(row.has_details for row in rows)
+        logger.info(f"Found {len(rows)} match links ({detailed} with listing details)")
+        if rows and not detailed:
+            logger.debug("Listing rows unreadable; falling back to match pages")
+        return rows
 
-    async def process_match(
-        self, match_url: str, upcoming_only: bool = False
-    ) -> ProcessMatchResult:
-        """Load one match from the cache or its page.
+    def _cached_match(self, row: ListingRow) -> Match | None:
+        """Return the cached match, refreshed from the listing row, if usable."""
+        entry = self.cache.get(row.url)
+        if entry is None:
+            return None
+        try:
+            cached = Match.from_dict(entry["match"])
+            schedule = entry["schedule"]
+        except (TypeError, ValueError, KeyError):
+            logger.warning(f"Discarding malformed cached match for {row.url}")
+            self.cache.invalidate(row.url)
+            return None
+
+        status = row.status
+        listing_is_enough = row.has_details and not (
+            status == "completed" and row.score is None
+        )
+        if status is None or not listing_is_enough:
+            # Nothing to refresh the cached copy with: trust finished matches only.
+            return cached if should_use_cached_match(cached) else None
+        if schedule != row.schedule:
+            logger.debug(f"Listed schedule changed for {row.url}; refetching")
+            return None
+        return replace(cached, status=status, score=row.score, countdown=row.countdown)
+
+    async def process_match(self, target: ListingRow | str) -> ProcessMatchResult:
+        """Load one match from the listing and cache, or from its page.
 
         Args:
-            match_url: Absolute match page URL.
-            upcoming_only: Mark non-upcoming matches as skipped.
+            target: A listing row, or a bare match URL when no row is known.
 
         Returns:
-            The match with cache, TBD, skip, or error metadata.
+            The match with cache, TBD, or error metadata.
         """
-        logger.debug(f"Processing match: {match_url}")
+        row = ListingRow(url=target) if isinstance(target, str) else target
+        logger.debug(f"Processing match: {row.url}")
 
         try:
-            cached_data = self.cache.get(match_url)
-            if cached_data is not None:
-                try:
-                    cached = Match.from_dict(cached_data)
-                except (TypeError, ValueError):
-                    logger.warning(f"Discarding malformed cached match for {match_url}")
-                    self.cache.invalidate(match_url)
-                else:
-                    if should_use_cached_match(cached):
-                        if upcoming_only:
-                            return ProcessMatchResult(skipped=True, cache_hit=True)
-                        return ProcessMatchResult(match=cached, cache_hit=True)
+            if row.is_tbd:
+                return ProcessMatchResult(is_tbd=True)
 
-            soup = await self.http.fetch(match_url)
+            cached = self._cached_match(row)
+            if cached is not None:
+                return ProcessMatchResult(match=cached, cache_hit=True)
+
+            soup = await self.http.fetch(row.url)
             if not soup:
                 return ProcessMatchResult(
-                    error=self.http.errors.get(match_url)
-                    or FetchError(match_url, "fetch", "Could not fetch match page")
+                    error=self.http.errors.get(row.url)
+                    or FetchError(row.url, "fetch", "Could not fetch match page")
                 )
 
-            result = build_match_from_soup(soup, match_url)
+            result = build_match_from_soup(soup, row.url)
             match = result.match
             if match is None:
                 return result
 
-            # Only finished matches are stable enough to cache.
-            if match.status == "completed":
-                self.cache.set(match_url, match.to_dict())
+            # With a listing row, later runs can refresh status and score, so
+            # any match is safe to cache. Without one, only finished matches are.
+            if row.has_details or match.status == "completed":
+                self.cache.set(
+                    row.url, {"match": match.to_dict(), "schedule": row.schedule}
+                )
             else:
-                self.cache.invalidate(match_url)
-
-            if upcoming_only and match.status != "upcoming":
-                return ProcessMatchResult(skipped=True)
+                self.cache.invalidate(row.url)
             return result
 
         except (ValueError, TypeError, KeyError, OSError) as e:
-            logger.error(f"Error processing match {match_url}: {e}", exc_info=True)
-            return ProcessMatchResult(error=FetchError(match_url, "processing", str(e)))
+            logger.error(f"Error processing match {row.url}: {e}", exc_info=True)
+            return ProcessMatchResult(error=FetchError(row.url, "processing", str(e)))
+
+
+def _target_url(target: ListingRow | str) -> str:
+    """Return the match URL of a listing row or bare URL."""
+    return target if isinstance(target, str) else target.url
 
 
 async def process_matches_async(
     client: AsyncValorantClient,
-    match_urls: list[str],
+    targets: Sequence[ListingRow | str],
     view_mode: str = "all",
     progress_callback: Callable[[], None] | None = None,
 ) -> ProcessedMatches:
@@ -143,7 +175,7 @@ async def process_matches_async(
 
     Args:
         client: An open client.
-        match_urls: Absolute match URLs.
+        targets: Listing rows, or bare match URLs when no rows are known.
         view_mode: "all", "results", or "upcoming"; other statuses are skipped.
         progress_callback: Called once per finished match.
 
@@ -153,18 +185,30 @@ async def process_matches_async(
     wanted_status = VIEW_MODE_STATUS.get(view_mode)
     processed = ProcessedMatches(results=[])
 
-    async def process_single(match_url: str) -> ProcessMatchResult:
-        result = await client.process_match(match_url, wanted_status == "upcoming")
+    async def process_single(target: ListingRow | str) -> ProcessMatchResult:
+        listed = None if isinstance(target, str) else target
+        if (
+            wanted_status
+            and listed is not None
+            and listed.has_details
+            and not listed.is_tbd
+            and listed.status != wanted_status
+        ):
+            # The listing already says this match is not wanted: no request.
+            result = ProcessMatchResult(skipped=True)
+        else:
+            result = await client.process_match(target)
         if progress_callback:
             progress_callback()
         return result
 
     # gather() returns in task order, so results stay in original link order
     completed = await asyncio.gather(
-        *(process_single(url) for url in match_urls), return_exceptions=True
+        *(process_single(target) for target in targets), return_exceptions=True
     )
 
-    for match_url, item in zip(match_urls, completed, strict=True):
+    for target, item in zip(targets, completed, strict=True):
+        match_url = _target_url(target)
         if isinstance(item, BaseException):
             logger.warning(f"Failed to process match: {item}")
             processed.failed_count += 1

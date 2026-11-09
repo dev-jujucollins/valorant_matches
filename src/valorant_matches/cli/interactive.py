@@ -54,6 +54,9 @@ class InteractiveState:
     group_by: GroupKey | None = None
     favorites_only: bool = False
     force_refresh: bool = False
+    # The event on screen, kept so filter changes can redraw without refetching.
+    last_event: DiscoveredEvent | None = None
+    last_view_mode: ViewMode = "all"
     last_loaded: list[Match] = field(default_factory=list)
 
     def active_filters(self) -> list[str]:
@@ -165,7 +168,77 @@ def _prompt_choice(
     return None
 
 
-def _set_team_filter(formatter: Formatter, state: InteractiveState) -> None:
+def _render_loaded(
+    formatter: Formatter,
+    state: InteractiveState,
+    opts: RunOptions,
+    suggest: bool = True,
+) -> None:
+    """Display the loaded event's matches with the current filters."""
+    matches = prepare_matches(
+        state.last_loaded,
+        zone=opts.zone,
+        team=state.team,
+        favorite_teams=opts.favorite_teams,
+        favorites_only=state.favorites_only,
+        sort_by=state.sort_by,
+    )
+    logger.info(f"Displaying {len(matches)} matches")
+    formatter.blank()
+
+    if matches:
+        display_results(
+            matches,
+            formatter,
+            compact=opts.compact,
+            group_by=state.group_by,
+            zone=opts.zone,
+        )
+        return
+
+    print_empty_results(
+        formatter,
+        view_mode=state.last_view_mode,
+        team=state.team,
+        favorites_only=state.favorites_only,
+        interactive=True,
+    )
+    if suggest and state.team:
+        suggestions = _suggest_team_names(state.last_loaded, state.team)
+        if suggestions:
+            formatter.muted("Try one of: " + ", ".join(suggestions))
+    formatter.blank()
+
+
+def _apply_change(
+    formatter: Formatter,
+    state: InteractiveState,
+    opts: RunOptions,
+    hint: str | None = None,
+) -> None:
+    """Redraw the loaded event after a filter change, without refetching.
+
+    Args:
+        formatter: Output formatter.
+        state: Current filters and the loaded event.
+        opts: Resolved options.
+        hint: Next step to suggest when no event has been loaded yet.
+    """
+    if state.last_event is None:
+        if hint:
+            _print_next_step_hint(formatter, hint)
+        return
+    formatter.blank()
+    formatter.info(
+        f"{state.last_event.name} ({state.last_view_mode}, already loaded)",
+        bold=True,
+    )
+    _render_loaded(formatter, state, opts, suggest=False)
+
+
+def _set_team_filter(
+    formatter: Formatter, state: InteractiveState, opts: RunOptions
+) -> None:
     """Prompt for a team filter and suggest close names."""
     team = formatter.ask(
         "Enter team name to filter (supports partial/fuzzy, empty to clear):"
@@ -178,21 +251,21 @@ def _set_team_filter(formatter: Formatter, state: InteractiveState) -> None:
         suggestions = _suggest_team_names(state.last_loaded, state.team)
         if suggestions:
             formatter.muted("Did you mean: " + ", ".join(suggestions))
-    _print_next_step_hint(formatter, "pick an event number to apply the filter")
+    _apply_change(formatter, state, opts, "pick an event number to apply the filter")
 
 
-def _set_sort(formatter: Formatter, state: InteractiveState) -> None:
+def _set_sort(formatter: Formatter, state: InteractiveState, opts: RunOptions) -> None:
     """Prompt for a sort order."""
     choice = _prompt_choice(formatter, "Sort by:", SORT_KEYS, "Clear sort")
     state.sort_by = pick(choice, SORT_KEYS)
-    _print_next_step_hint(formatter, "pick an event number to apply sorting")
+    _apply_change(formatter, state, opts, "pick an event number to apply sorting")
 
 
-def _set_group(formatter: Formatter, state: InteractiveState) -> None:
+def _set_group(formatter: Formatter, state: InteractiveState, opts: RunOptions) -> None:
     """Prompt for a grouping."""
     choice = _prompt_choice(formatter, "Group by:", GROUP_KEYS, "Clear grouping")
     state.group_by = pick(choice, GROUP_KEYS)
-    _print_next_step_hint(formatter, "pick an event number to apply grouping")
+    _apply_change(formatter, state, opts, "pick an event number to apply grouping")
 
 
 def _toggle_favorites(
@@ -204,6 +277,7 @@ def _toggle_favorites(
         return
     state.favorites_only = not state.favorites_only
     formatter.info(f"Favorite filter {'on' if state.favorites_only else 'off'}")
+    _apply_change(formatter, state, opts)
 
 
 def _request_refresh(formatter: Formatter, state: InteractiveState) -> None:
@@ -277,38 +351,10 @@ def _show_event(
         return
 
     state.last_loaded = fetched
-    matches = prepare_matches(
-        fetched,
-        zone=opts.zone,
-        team=state.team,
-        favorite_teams=opts.favorite_teams,
-        favorites_only=state.favorites_only,
-        sort_by=state.sort_by,
-    )
-    logger.info(f"Displaying {len(matches)} matches")
-    formatter.blank()
-
-    if matches:
-        display_results(
-            matches,
-            formatter,
-            compact=opts.compact,
-            group_by=state.group_by,
-            zone=opts.zone,
-        )
-        return
-
-    print_empty_results(
-        formatter,
-        view_mode=view_mode,
-        team=state.team,
-        favorites_only=state.favorites_only,
-        interactive=True,
-    )
-    if state.team:
-        suggestions = _suggest_team_names(fetched, state.team)
-        if suggestions:
-            formatter.muted("Try one of: " + ", ".join(suggestions))
+    state.last_event = event
+    state.last_view_mode = view_mode
+    _render_loaded(formatter, state, opts)
+    formatter.muted("f / s / g / v change the view of these matches instantly.")
     formatter.blank()
 
 
@@ -339,9 +385,9 @@ def run_interactive_mode(
         "r": lambda: _request_refresh(formatter, state),
         "h": lambda: print_shortcuts(formatter),
         "v": lambda: _toggle_favorites(formatter, state, opts),
-        "f": lambda: _set_team_filter(formatter, state),
-        "s": lambda: _set_sort(formatter, state),
-        "g": lambda: _set_group(formatter, state),
+        "f": lambda: _set_team_filter(formatter, state, opts),
+        "s": lambda: _set_sort(formatter, state, opts),
+        "g": lambda: _set_group(formatter, state, opts),
     }
 
     while True:

@@ -2,13 +2,15 @@
 
 import logging
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 
+from rich.text import Text
+
 from valorant_matches.cli.options import ExportFormat, GroupKey, RunOptions, SortKey
-from valorant_matches.output.exporters import export_matches
+from valorant_matches.output.exporters import export_matches, is_stdout
 from valorant_matches.output.formatter import Formatter
 from valorant_matches.scraping.discovery import DiscoveredEvent, EventDiscovery
 from valorant_matches.scraping.event_selection import select_events
@@ -19,6 +21,9 @@ logger = logging.getLogger("valorant_matches")
 
 # Errors listed individually before the summary collapses the rest
 MAX_LISTED_ERRORS = 5
+
+# Score/status changes kept on screen across watch refreshes
+MAX_WATCH_CHANGES = 10
 
 STATUS_GROUP_LABELS = {
     "live": ("LIVE MATCHES", "live"),
@@ -118,6 +123,7 @@ def fetch_matches(
     view_mode: str,
     cache_enabled: bool,
     stats: MatchStats,
+    quiet: bool = False,
 ) -> list[Match]:
     """Fetch every event's matches, reporting progress and event failures.
 
@@ -125,20 +131,26 @@ def fetch_matches(
         events: Events to fetch, in order.
         formatter: Output formatter.
         view_mode: "all", "results", or "upcoming".
-        cache_enabled: Read and write the completed-match cache.
+        cache_enabled: Read and write the match cache.
         stats: Counts updated in place.
+        quiet: Skip the per-event heading and progress bar.
 
     Returns:
         Matches across all events, unique by URL.
     """
     fetched: dict[str, Match] = {}
     for event in events:
-        status = f" ({event.status})" if event.status != "unknown" else ""
-        formatter.blank()
-        formatter.info(f"Fetching matches for: {event.name}{status}", bold=True)
-        formatter.blank()
+        if not quiet:
+            status = f" ({event.status})" if event.status != "unknown" else ""
+            formatter.blank()
+            formatter.info(f"Fetching matches for: {event.name}{status}", bold=True)
         result = fetch_event_data(
-            event.url, event.slug, view_mode=view_mode, cache_enabled=cache_enabled
+            event.url,
+            event.slug,
+            view_mode=view_mode,
+            cache_enabled=cache_enabled,
+            show_progress=not quiet,
+            console=formatter.console,
         )
         stats.add_fetch(result)
         if result.error:
@@ -396,9 +408,11 @@ class WatchState:
 
     previous: dict[str, tuple[str, str]] = field(default_factory=dict)
     last_success: str | None = None
+    # Recent changes stay listed, since each refresh redraws the screen.
+    changes: deque[str] = field(default_factory=lambda: deque(maxlen=MAX_WATCH_CHANGES))
 
     def report(self, matches: list[Match], formatter: Formatter) -> None:
-        """Print score/status changes without losing unseen previous values.
+        """Record new score/status changes and print the recent ones.
 
         Args:
             matches: Matches from the latest refresh.
@@ -408,11 +422,15 @@ class WatchState:
             current = (match.score or "–", match.status)
             before = self.previous.get(match.url)
             if before is not None and before != current:
-                formatter.print(
+                stamp = datetime.now().astimezone().strftime("%H:%M:%S")
+                self.changes.append(
                     f"Changed: {match.team1} vs {match.team2}: "
                     f"{before[0]} ({before[1]}) → {current[0]} ({current[1]})"
+                    f" at {stamp}"
                 )
             self.previous[match.url] = current
+        for change in self.changes:
+            formatter.print(change, "highlight")
 
 
 def run_cli_mode(
@@ -433,18 +451,28 @@ def run_cli_mode(
         return _run_cli_once(opts, formatter, discovery)
 
     state = WatchState()
+    console = formatter.console
     formatter.print("Watching matches. Press Ctrl+C to stop.")
     try:
         while True:
-            if _run_cli_once(opts, formatter, discovery, state) == 0:
-                state.last_success = (
-                    datetime.now().astimezone().isoformat(timespec="seconds")
+            # Build the whole frame off screen, then swap it in, so the old
+            # listing stays readable while the refresh is fetching.
+            with console.capture() as capture:
+                if _run_cli_once(opts, formatter, discovery, state, quiet=True) == 0:
+                    state.last_success = (
+                        datetime.now().astimezone().isoformat(timespec="seconds")
+                    )
+                else:
+                    formatter.print("Refresh incomplete; retrying after the interval.")
+                formatter.print(
+                    f"Last successful update: {state.last_success or 'none yet'}"
                 )
-            else:
-                formatter.print("Refresh incomplete; retrying after the interval.")
-            formatter.print(
-                f"Last successful update: {state.last_success or 'none yet'}"
-            )
+                formatter.muted(
+                    f"Refreshing every {opts.interval}s. Press Ctrl+C to stop."
+                )
+            if console.is_terminal:
+                console.clear()
+            console.print(Text.from_ansi(capture.get()), soft_wrap=True)
             time.sleep(opts.interval)
     except KeyboardInterrupt:
         formatter.print("Watch stopped.")
@@ -488,7 +516,8 @@ def _export(
         formatter.error(f"Export failed: {error}")
         return 1
     print_error_summary(formatter, stats.errors)
-    formatter.success(f"Exported {count} matches to {path}")
+    target = "standard output" if is_stdout(path) else path
+    formatter.success(f"Exported {count} matches to {target}")
     formatter.blank()
     return 1 if stats.failed else 0  # Partial exports are not complete success
 
@@ -498,6 +527,7 @@ def _run_cli_once(
     formatter: Formatter,
     discovery: EventDiscovery,
     watch_state: WatchState | None = None,
+    quiet: bool = False,
 ) -> int:
     """Select events, fetch, filter, and display or export one time.
 
@@ -506,6 +536,7 @@ def _run_cli_once(
         formatter: Output formatter.
         discovery: Event discovery service.
         watch_state: Previous values to compare against in watch mode.
+        quiet: Skip per-event headings and progress bars.
 
     Returns:
         0 on success (including an empty schedule), 1 on any failure.
@@ -535,6 +566,7 @@ def _run_cli_once(
         view_mode=opts.view_mode,
         cache_enabled=opts.cache_enabled,
         stats=stats,
+        quiet=quiet,
     )
     if not stats.total and not opts.export and not stats.failed:
         formatter.blank()

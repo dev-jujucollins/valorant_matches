@@ -1,4 +1,5 @@
 # Tests for event discovery.
+import time
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -8,11 +9,14 @@ from bs4 import BeautifulSoup
 
 from valorant_matches.scraping.discovery import (
     EVENT_CACHE_TTL,
+    SNAPSHOT_FRESH_SECONDS,
     VCT_EVENTS_URL,
     DiscoveredEvent,
     EventDiscovery,
     canonical_region,
 )
+
+DISCOVERY = "valorant_matches.scraping.discovery"
 
 
 class TestEventDiscovery:
@@ -166,11 +170,44 @@ class TestEventDiscovery:
             assert len(first.discover_events()) == 1
 
         later = EventDiscovery(season=2026, snapshot_dir=tmp_path)
-        with patch.object(later, "_fetch", return_value=None):
+        with (
+            patch(f"{DISCOVERY}.SNAPSHOT_FRESH_SECONDS", 0),
+            patch.object(later, "_fetch", return_value=None),
+        ):
             events = later.discover_events()
         assert [event.event_id for event in events] == ["2682"]
         assert later.is_stale is True
         assert later.last_updated is not None
+
+    def test_recent_snapshot_is_reused_without_a_request(self, tmp_path: Path) -> None:
+        """A later run trusts a recent saved list; --refresh and age do not."""
+        html = BeautifulSoup(
+            '<a href="/event/2682/vct-2026-americas-kickoff">VCT 2026: Americas Kickoff</a>',
+            "html.parser",
+        )
+        first = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+        with patch.object(first, "_fetch", return_value=html):
+            first.discover_events()
+
+        later = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+        with patch.object(later, "_fetch", return_value=html) as fetch:
+            events = later.discover_events()
+            assert [event.event_id for event in events] == ["2682"]
+            assert later.is_stale is False
+            fetch.assert_not_called()
+            later.discover_events(force_refresh=True)
+            assert fetch.call_count == 1
+
+        aged = EventDiscovery(season=2026, snapshot_dir=tmp_path)
+        with (
+            patch(
+                f"{DISCOVERY}.time.time",
+                return_value=time.time() + SNAPSHOT_FRESH_SECONDS + 1,
+            ),
+            patch.object(aged, "_fetch", return_value=html) as fetch,
+        ):
+            aged.discover_events()
+        assert fetch.call_count == 1
 
     def test_selected_season_excludes_other_years(self, tmp_path: Path) -> None:
         """Season selection never silently returns another year's events."""
@@ -319,6 +356,7 @@ def test_cached_events_expire(tmp_path) -> None:
     with (
         patch.object(discovery, "_fetch", return_value=html) as fetch,
         patch("valorant_matches.scraping.discovery.time.monotonic") as clock,
+        patch(f"{DISCOVERY}.SNAPSHOT_FRESH_SECONDS", 0),
     ):
         clock.return_value = 1000.0
         discovery.discover_events()

@@ -8,7 +8,7 @@ from typing import Any, Literal, get_args
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from valorant_matches.config import BASE_URL
 
@@ -58,6 +58,13 @@ MATCH_STATUSES: tuple[MatchStatus, ...] = get_args(MatchStatus)
 # VLR's "data-utc-ts" attribute holds US Eastern wall time, not UTC: a match
 # the site renders as "2:00 AM PDT" carries "05:00:00" there.
 SOURCE_TIMEZONE = ZoneInfo("America/New_York")
+
+# Status badge classes on an event listing row.
+LISTING_STATUS_CLASSES: dict[str, MatchStatus] = {
+    "mod-live": "live",
+    "mod-upcoming": "upcoming",
+    "mod-completed": "completed",
+}
 
 
 def _parse_aware_datetime(raw: str) -> datetime:
@@ -149,6 +156,44 @@ class Match:
         if not all(isinstance(value, str) for value in (*text_fields, *labels)):
             raise TypeError("match text fields must be strings")
         return match
+
+
+@dataclass(frozen=True)
+class ListingRow:
+    """One match as listed on an event's matches page.
+
+    The listing shows teams, score, and status for every match, so most runs
+    never need the match page. It has no real timestamp (its clock text is
+    rendered in the viewer's timezone), so start times still come from match
+    pages; ``schedule`` only detects when a match has been rescheduled.
+
+    Attributes:
+        url: Absolute match page URL.
+        team1: First team name, when the row could be read.
+        team2: Second team name, when the row could be read.
+        status: Listed status, when the row could be read.
+        score: Map score such as "2 : 1", or None when none is listed.
+        countdown: Time until start such as "1d 5h", for upcoming matches.
+        schedule: Listed date and clock text, compared between runs.
+    """
+
+    url: str
+    team1: str | None = None
+    team2: str | None = None
+    status: MatchStatus | None = None
+    score: str | None = None
+    countdown: str | None = None
+    schedule: str = ""
+
+    @property
+    def has_details(self) -> bool:
+        """Whether teams and status were read; otherwise only the URL is known."""
+        return bool(self.team1 and self.team2 and self.status)
+
+    @property
+    def is_tbd(self) -> bool:
+        """Whether a team is still undecided."""
+        return "TBD" in (self.team1, self.team2)
 
 
 @dataclass
@@ -380,7 +425,8 @@ def build_match_from_soup(soup: BeautifulSoup, match_url: str) -> ProcessMatchRe
 def should_use_cached_match(match: Match) -> bool:
     """Return True when cached match data is safe to display.
 
-    Only finished matches are cached; anything else is refetched.
+    Used when the event listing gave no details to refresh the cached copy
+    with: only a finished match with a real score can be trusted as is.
 
     Args:
         match: A match rebuilt from the cache.
@@ -404,6 +450,102 @@ def extract_event_slug(event_url: str) -> str | None:
     return None
 
 
+def _clean(text: str) -> str:
+    """Collapse runs of whitespace."""
+    return " ".join(text.split())
+
+
+def _listing_status(link: Tag) -> MatchStatus | None:
+    """Read a listing row's status from its badge class, then its label."""
+    badge = link.select_one(".ml")
+    if badge is None:
+        return None
+    classes = badge.get("class") or []
+    for class_name, status in LISTING_STATUS_CLASSES.items():
+        if class_name in classes:
+            return status
+    label = badge.select_one(".ml-status")
+    text = _clean(label.get_text()).lower() if label else ""
+    return next((status for status in MATCH_STATUSES if status == text), None)
+
+
+def _listing_schedule(link: Tag) -> str:
+    """Join a row's date heading and clock text, e.g. "Thu, May 1 | 2:00 PM"."""
+    heading = link.find_previous("div", class_="wf-label")
+    # Direct text only: VLR nests a "Today" tag in the heading, which would
+    # otherwise make the value change from one day to the next.
+    date = (
+        _clean(
+            "".join(
+                str(text) for text in heading.find_all(string=True, recursive=False)
+            )
+        )
+        if isinstance(heading, Tag)
+        else ""
+    )
+    clock = link.select_one(".match-item-time")
+    return f"{date} | {_clean(clock.get_text()) if clock else ''}"
+
+
+def _listing_row(link: Tag, url: str) -> ListingRow:
+    """Read one listing link; a row that cannot be read keeps only its URL."""
+    names = [
+        _clean(element.get_text(" "))
+        for element in link.select(".match-item-vs-team-name")
+    ]
+    status = _listing_status(link)
+    if len(names) != 2 or not all(names) or status is None:
+        return ListingRow(url=url)
+
+    scores = [
+        _clean(element.get_text())
+        for element in link.select(".match-item-vs-team-score")
+    ]
+    has_score = (
+        status != "upcoming"
+        and len(scores) == 2
+        and all(score.isdigit() for score in scores)
+    )
+    eta = link.select_one(".ml-eta")
+    countdown = _clean(eta.get_text()) if eta and status == "upcoming" else ""
+    return ListingRow(
+        url=url,
+        team1=names[0],
+        team2=names[1],
+        status=status,
+        score=f"{scores[0]} : {scores[1]}" if has_score else None,
+        countdown=countdown or None,
+        schedule=_listing_schedule(link),
+    )
+
+
+def parse_event_listing(
+    soup: BeautifulSoup,
+    slug_pattern: re.Pattern[str] | None = None,
+) -> list[ListingRow]:
+    """Read the match rows on an event's matches page, in page order.
+
+    Args:
+        soup: Parsed event matches page.
+        slug_pattern: Optional pattern a link must contain to belong to the event.
+
+    Returns:
+        One row per unique match link. Links whose markup is not a readable
+        match row are kept with only their URL, so callers can still fetch them.
+    """
+    rows: dict[str, ListingRow] = {}
+    for link in soup.select("a[href]"):
+        href = link.get("href")
+        if not isinstance(href, str) or not MATCH_URL_PATTERN.match(href):
+            continue
+        if slug_pattern and not slug_pattern.search(href.lower()):
+            continue
+        url = urljoin(BASE_URL, href)
+        if url not in rows:
+            rows[url] = _listing_row(link, url)
+    return list(rows.values())
+
+
 def find_event_match_urls(
     soup: BeautifulSoup,
     slug_pattern: re.Pattern[str] | None = None,
@@ -417,12 +559,4 @@ def find_event_match_urls(
     Returns:
         Unique absolute match URLs.
     """
-    urls: dict[str, None] = {}
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if not isinstance(href, str) or not MATCH_URL_PATTERN.match(href):
-            continue
-        if slug_pattern and not slug_pattern.search(href.lower()):
-            continue
-        urls[urljoin(BASE_URL, href)] = None
-    return list(urls)
+    return [row.url for row in parse_event_listing(soup, slug_pattern)]

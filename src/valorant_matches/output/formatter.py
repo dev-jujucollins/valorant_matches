@@ -62,6 +62,7 @@ class Formatter:
         color: bool | None = None,
         favorite_teams: Iterable[str] = (),
         console: Console | None = None,
+        stderr: bool = False,
     ) -> None:
         """Create a formatter.
 
@@ -69,12 +70,14 @@ class Formatter:
             color: Force color on or off; None detects the terminal.
             favorite_teams: Team names to mark with a star.
             console: Console to print to; built from the theme when omitted.
+            stderr: Print to stderr, keeping stdout free for exported data.
         """
         self.console = console or Console(
             theme=VALORANT_THEME,
             highlight=False,
             force_terminal=color,
             no_color=color is False,
+            stderr=stderr,
         )
         self.set_favorite_teams(favorite_teams)
 

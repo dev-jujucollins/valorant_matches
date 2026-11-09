@@ -15,3 +15,12 @@ Tests serve these files through mocked HTTP responses; no live network needed.
 https://www.vlr.gg/753444/100-thieves-vs-t1-valorant-champions-2026-opening-a
 on 2026-09-09. It preserves the tentative-date/time-TBD notice and score
 placeholder, which must not be interpreted as a completed match or exact start.
+
+`event-listing.html` follows the match rows of
+https://www.vlr.gg/event/matches/2766/ as fetched on 2026-11-09. The Team Liquid
+and LOUD rows keep that page's teams, scores, status badges, and clock text
+(rendered for a US Pacific viewer); VOD/stat tags were omitted. The live,
+upcoming, TBD, and plain-link rows and the "Today" tag are controlled variants,
+not historical snapshots. The upcoming rows copy the badge markup seen on
+https://www.vlr.gg/matches the same day: a bare `ml` class whose status is only
+in the `ml-status` text.
