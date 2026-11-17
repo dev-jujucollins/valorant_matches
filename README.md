@@ -366,6 +366,6 @@ request policy: retries with backoff, `Retry-After`, rate limiting, and a circui
 breaker. Requests identify themselves with a `valorant-matches/<version>`
 User-Agent.
 
-CI tests Python 3.11–3.14 on Linux, plus a Windows smoke/test job. Each job builds
+CI tests Python 3.13–3.14 on Linux, plus a Windows smoke/test job. Each job builds
 and installs the wheel into a clean environment and checks the installed CLI from
 outside the checkout. Parser fixtures live in `tests/fixtures/vlr/`.

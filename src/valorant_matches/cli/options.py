@@ -3,7 +3,7 @@
 import argparse
 from dataclasses import dataclass, field
 from datetime import tzinfo
-from typing import Literal, TypeVar, get_args
+from typing import Literal, get_args
 from zoneinfo import ZoneInfo
 
 from valorant_matches.profile import UserProfile
@@ -21,10 +21,8 @@ EXPORT_FORMATS: list[ExportFormat] = list(get_args(ExportFormat))
 # Value accepted by --sort, --group-by, and config to clear a saved choice
 NONE_CHOICE = "none"
 
-_Choice = TypeVar("_Choice", bound=str)
 
-
-def pick(value: str | None, choices: list[_Choice]) -> _Choice | None:
+def pick[Choice: str](value: str | None, choices: list[Choice]) -> Choice | None:
     """Narrow a string to one of the allowed literal choices.
 
     Args:

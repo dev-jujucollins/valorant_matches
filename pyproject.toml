@@ -3,7 +3,7 @@ name = "valorant-matches"
 version = "0.1.0"
 description = "A Python application that fetches and displays match results from the Valorant Champions Tour (VCT) events"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.9.0",
     "beautifulsoup4>=4.12.0",
@@ -42,14 +42,14 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 typeCheckingMode = "basic"
 include = ["src", "tests"]
 exclude = [".venv"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py313"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
